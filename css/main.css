@@ -368,6 +368,58 @@ button:focus-visible, input:focus-visible {
   50% { transform: translateY(-10px); }
 }
 
+/* --- in-game rejoin QR (big screen) --- */
+.game-qr {
+  position: fixed;
+  right: 14px; bottom: 14px;
+  z-index: 900; /* above game overlays (mash/duel/win screens) */
+  background: rgba(255, 248, 240, 0.94);
+  border-radius: 16px;
+  padding: 10px;
+  display: flex; align-items: center; gap: 10px;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.18), 0 0 0 2px #fff, 0 0 0 4px var(--c-pink);
+}
+.game-qr #game-qr-code { background: #fff; padding: 4px; border-radius: 8px; line-height: 0; }
+.game-qr #game-qr-code img, .game-qr #game-qr-code canvas { display: block; }
+.game-qr-meta {
+  font-size: 11px; font-weight: 600;
+  color: var(--c-text-soft);
+  line-height: 1.45;
+}
+.game-qr-meta b {
+  font-family: var(--font-display);
+  font-size: 17px;
+  letter-spacing: 3px;
+  color: var(--c-red);
+}
+
+/* --- misc controller extras --- */
+.ctrl-link {
+  border: none; background: none;
+  font-family: var(--font-body);
+  font-size: 12px; font-weight: 600;
+  color: var(--c-blue);
+  text-decoration: underline;
+  margin-top: 6px;
+}
+
+.ctrl-transfer { margin-top: 18px; }
+.ctrl-transfer-list { display: flex; flex-direction: column; gap: 8px; }
+.ctrl-transfer-btn {
+  display: flex; align-items: center; gap: 10px;
+  border: none;
+  background: #fff;
+  border-radius: 14px;
+  padding: 10px 14px;
+  font-family: var(--font-body);
+  font-size: 15px; font-weight: 600;
+  color: var(--c-text);
+  box-shadow: 0 3px 8px rgba(0,0,0,0.08), 0 0 0 2px var(--c-pink);
+  transition: transform 0.12s ease;
+}
+.ctrl-transfer-btn:active { transform: scale(0.97); }
+.ctrl-transfer-btn .crown-hint { margin-left: auto; font-size: 13px; }
+
 /* --- phone host menu --- */
 .ctrl-menu { display: flex; flex-direction: column; gap: 10px; }
 .ctrl-menu-title {

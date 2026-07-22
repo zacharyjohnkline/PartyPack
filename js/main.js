@@ -71,10 +71,18 @@ function randomCode() {
 /* ============================================================
    Mode detection: ?join=CODE → controller, otherwise host
    ============================================================ */
-const joinParam = new URLSearchParams(location.search).get('join');
-if (joinParam || sessionStorage.getItem('pp_ctrl_room')) {
+const bootParams = new URLSearchParams(location.search);
+const joinParam = bootParams.get('join');
+const forceHost = bootParams.has('host');
+let savedCtrlRoom = null;
+try { savedCtrlRoom = localStorage.getItem('pp_ctrl_room'); } catch (e) {}
+if (!forceHost && (joinParam || savedCtrlRoom)) {
   startController(joinParam);
 } else {
+  if (forceHost) {
+    // This device is explicitly the big screen — forget any controller past.
+    try { localStorage.removeItem('pp_ctrl_room'); localStorage.removeItem('pp_ctrl_saved'); } catch (e) {}
+  }
   startHost();
 }
 
@@ -130,6 +138,7 @@ function startHost() {
       hostId: partyHostId,
       hostName: h ? h.name : '',
       hostConnected: !!(h && h.connected),
+      players: publicPlayers().map((p) => ({ id: p.id, name: p.name, avatar: p.avatar, connected: p.connected })),
       games: GAMES.map((g) => ({
         id: g.id, title: g.title, tagline: g.tagline, emoji: g.emoji,
         minPlayers: g.minPlayers, maxPlayers: g.maxPlayers,
@@ -153,6 +162,7 @@ function startHost() {
     root.innerHTML = '';
     root.classList.remove('hidden');
     $('host-exit-btn').classList.remove('hidden');
+    $('game-qr').classList.remove('hidden');
 
     const ctx = { root, players: publicPlayers, sendTo, sendAll, exit: exitGame, hostPlayerId: () => partyHostId };
     active = { module, instance: module.createHost(ctx) };
@@ -169,6 +179,7 @@ function startHost() {
     root.innerHTML = '';
     root.classList.add('hidden');
     $('host-exit-btn').classList.add('hidden');
+    $('game-qr').classList.add('hidden');
     $('lobby-screen').classList.remove('hidden');
     broadcastRaw({ type: 'scene', scene: 'lobby' });
     broadcastParty();
@@ -236,9 +247,13 @@ function startHost() {
       $('host-status').textContent = 'Room is open';
       const qrBox = $('qr-box');
       qrBox.innerHTML = '';
+      const gameQr = $('game-qr-code');
+      gameQr.innerHTML = '';
+      $('game-qr-roomcode').textContent = roomCode;
       if ((location.protocol === 'http:' || location.protocol === 'https:') && typeof QRCode !== 'undefined') {
         const joinUrl = location.origin + location.pathname + '?join=' + roomCode;
         new QRCode(qrBox, { text: joinUrl, width: 128, height: 128 });
+        new QRCode(gameQr, { text: joinUrl, width: 84, height: 84 });
       } else {
         qrBox.innerHTML = '<span style="font-size:12px;color:#8a5a78;padding:8px">Serve over http(s)<br>for a QR code</span>';
       }
@@ -273,11 +288,23 @@ function startHost() {
     if (!msg || typeof msg !== 'object') return;
 
     if (msg.type === 'hello') {
+      const dev = typeof msg.deviceId === 'string' ? msg.deviceId.slice(0, 40) : null;
       let p = msg.playerId ? players.get(msg.playerId) : null;
+      if (!p && dev) {
+        // New tab / cleared session on a known phone — same device, same player.
+        for (const cand of players.values()) {
+          if (cand.deviceId && cand.deviceId === dev) { p = cand; break; }
+        }
+      }
 
       if (p) {
-        // Rejoining phone — reattach.
-        if (p.conn && p.conn.open && p.conn !== conn) { try { p.conn.close(); } catch (e) {} }
+        // Rejoining phone — reattach, and tell any older tab to stand down
+        // so the two tabs don't fight over the connection.
+        if (p.conn && p.conn.open && p.conn !== conn) {
+          try { p.conn.send({ type: 'superseded' }); } catch (e) {}
+          try { p.conn.close(); } catch (e) {}
+        }
+        if (dev) p.deviceId = dev;
         p.conn = conn;
         p.connected = true;
         if (msg.name) p.name = sanitizeName(msg.name);
@@ -304,6 +331,7 @@ function startHost() {
         color: COLORS[seat % COLORS.length],
         conn,
         connected: true,
+        deviceId: dev,
       };
       players.set(id, p);
       joinOrder.push(id);
@@ -330,6 +358,19 @@ function startHost() {
         partyHostId = pid;
         renderRoster();
         broadcastParty();
+      }
+      return;
+    }
+
+    if (msg.type === 'transfer-host') {
+      const pid = conn.metadata_ppid;
+      if (pid && pid === partyHostId && typeof msg.to === 'string') {
+        const target = players.get(msg.to);
+        if (target && target.connected) {
+          partyHostId = msg.to;
+          renderRoster();
+          broadcastParty();
+        }
       }
       return;
     }
@@ -385,9 +426,15 @@ function startController(codeFromUrl) {
   $('controller-app').classList.remove('hidden');
 
   const saved = readJson('pp_ctrl_saved'); // {room, playerId, name}
-  const roomPrefill = codeFromUrl || sessionStorage.getItem('pp_ctrl_room') || '';
+  let roomPrefill = codeFromUrl || '';
+  if (!roomPrefill) { try { roomPrefill = localStorage.getItem('pp_ctrl_room') || ''; } catch (e) {} }
+  if (!roomPrefill && saved && saved.room) roomPrefill = saved.room;
   $('ctrl-code').value = (roomPrefill || '').toUpperCase();
   if (saved && saved.name) $('ctrl-name').value = saved.name;
+
+  $('ctrl-open-host').addEventListener('click', () => {
+    location.href = location.pathname + '?host=1';
+  });
 
   let peer = null;
   let conn = null;
@@ -398,15 +445,17 @@ function startController(codeFromUrl) {
   let iAmHost = false;
   let reconnectTimer = null;
   let everConnected = false;
+  let superseded = false;   // a newer tab on this device took over
+  let lastJoin = null;      // { code, name } for reconnects
 
   const statusEl = $('ctrl-join-status');
 
   $('ctrl-join-btn').addEventListener('click', join);
   $('ctrl-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
 
-  // If this phone was already in a room (page reload), rejoin automatically.
-  if (saved && saved.room && (!codeFromUrl || codeFromUrl.toUpperCase() === saved.room)) {
-    $('ctrl-code').value = saved.room;
+  // If this phone already has a name and a room (any tab, any reload),
+  // rejoin automatically — kids shouldn't have to retype anything.
+  if (saved && saved.name && $('ctrl-code').value.length === 4) {
     join();
   }
 
@@ -416,7 +465,7 @@ function startController(codeFromUrl) {
     if (code.length !== 4) { statusEl.textContent = 'Enter the 4-letter room code.'; return; }
     if (!name) { statusEl.textContent = 'Pick a name so friends know who you are.'; return; }
 
-    sessionStorage.setItem('pp_ctrl_room', code);
+    try { localStorage.setItem('pp_ctrl_room', code); } catch (e) {}
     $('ctrl-join-btn').disabled = true;
     statusEl.textContent = 'Connecting…';
 
@@ -447,11 +496,13 @@ function startController(codeFromUrl) {
 
     conn.on('open', () => {
       everConnected = true;
+      lastJoin = { code, name };
       const savedNow = readJson('pp_ctrl_saved');
       conn.send({
         type: 'hello',
         name,
         playerId: savedNow && savedNow.room === code ? savedNow.playerId : null,
+        deviceId: getDeviceId(),
       });
     });
 
@@ -459,6 +510,7 @@ function startController(codeFromUrl) {
 
     conn.on('close', () => {
       setConnDot(false);
+      if (superseded) return;
       statusEl.textContent = 'Big screen went away — reconnecting…';
       scheduleReconnect(code, name);
     });
@@ -481,6 +533,26 @@ function startController(codeFromUrl) {
       $('ctrl-player-name').textContent = msg.name;
       $('ctrl-player-name').style.color = msg.color;
       setConnDot(true);
+      return;
+    }
+
+    if (msg.type === 'superseded') {
+      superseded = true;
+      clearTimeout(reconnectTimer);
+      teardownCtrlGame();
+      ctrlScene = 'lobby';
+      setConnDot(false);
+      const root = $('ctrl-game-root');
+      root.innerHTML = `
+        <div class="ctrl-wait">
+          <div class="ctrl-wait-emoji">👋</div>
+          <p>You joined from another tab,<br />so this one went to sleep.</p>
+          <button class="ctrl-btn ctrl-btn-big ctrl-rejoin-btn">Play here instead</button>
+        </div>`;
+      root.querySelector('.ctrl-rejoin-btn').addEventListener('click', () => {
+        superseded = false;
+        if (lastJoin) connectToHost(lastJoin.code, lastJoin.name);
+      });
       return;
     }
 
@@ -555,6 +627,26 @@ function startController(codeFromUrl) {
         }
         list.appendChild(btn);
       }
+
+      const others = (party.players || []).filter((pp) => pp.connected && me && pp.id !== me.playerId);
+      if (others.length) {
+        const tr = document.createElement('div');
+        tr.className = 'ctrl-transfer';
+        tr.innerHTML = `
+          <p class="ctrl-menu-sub">Or pass the crown to someone else:</p>
+          <div class="ctrl-transfer-list"></div>`;
+        const trList = tr.querySelector('.ctrl-transfer-list');
+        for (const pp of others) {
+          const btn = document.createElement('button');
+          btn.className = 'ctrl-transfer-btn';
+          btn.innerHTML = `<span>${pp.avatar}</span><span>${escapeHtml(pp.name)}</span><span class="crown-hint">Make host 👑</span>`;
+          btn.addEventListener('click', () => {
+            if (conn && conn.open) conn.send({ type: 'transfer-host', to: pp.id });
+          });
+          trList.appendChild(btn);
+        }
+        root.querySelector('.ctrl-menu').appendChild(tr);
+      }
       return;
     }
 
@@ -606,8 +698,21 @@ function sanitizeName(s) {
   return String(s || '').replace(/[<>]/g, '').trim().slice(0, 20);
 }
 function readJson(key) {
-  try { return JSON.parse(sessionStorage.getItem(key)); } catch (e) { return null; }
+  try { return JSON.parse(localStorage.getItem(key)); } catch (e) { return null; }
 }
 function writeJson(key, val) {
-  try { sessionStorage.setItem(key, JSON.stringify(val)); } catch (e) {}
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) {}
+}
+
+// A stable per-device identity so any tab (or a reopened browser) on the same
+// phone reclaims the same player instead of adding a duplicate.
+function getDeviceId() {
+  try {
+    let d = localStorage.getItem('pp_device');
+    if (!d) {
+      d = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      localStorage.setItem('pp_device', d);
+    }
+    return d;
+  } catch (e) { return null; }
 }

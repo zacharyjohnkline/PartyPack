@@ -57,6 +57,12 @@
 
   <!-- Small escape hatch shown during games -->
   <button id="host-exit-btn" class="host-exit hidden" title="Back to the lobby">⌂ Lobby</button>
+
+  <!-- Always-scannable rejoin QR while a game is running -->
+  <div id="game-qr" class="game-qr hidden">
+    <div id="game-qr-code"></div>
+    <div class="game-qr-meta">Scan to join or rejoin<br /><b id="game-qr-roomcode"></b></div>
+  </div>
 </div>
 
 <!-- ============================================================
@@ -75,6 +81,7 @@
       <input id="ctrl-name" class="ctrl-input" maxlength="20" autocomplete="off" placeholder="e.g. Sam" />
       <button id="ctrl-join-btn" class="ctrl-btn ctrl-btn-big">Join</button>
       <div id="ctrl-join-status" class="ctrl-status"></div>
+      <button id="ctrl-open-host" class="ctrl-link">Setting up the big screen on this device? Open the host view</button>
     </div>
   </div>
 
