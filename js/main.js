@@ -90,6 +90,7 @@ function startHost() {
   let scene = 'lobby';            // 'lobby' | 'game'
   let active = null;              // { module, instance }
   let hostPeer = null;
+  let partyHostId = null;         // playerId of the phone leading the party
 
   // Reuse the room across page reloads so phones stay paired.
   let roomCode = sessionStorage.getItem('pp_room');
@@ -121,6 +122,25 @@ function startHost() {
     for (const p of players.values()) sendRaw(p, msg);
   }
 
+  function partyState() {
+    const connectedCount = publicPlayers().filter((p) => p.connected).length;
+    const h = partyHostId ? players.get(partyHostId) : null;
+    return {
+      type: 'party',
+      hostId: partyHostId,
+      hostName: h ? h.name : '',
+      hostConnected: !!(h && h.connected),
+      games: GAMES.map((g) => ({
+        id: g.id, title: g.title, tagline: g.tagline, emoji: g.emoji,
+        minPlayers: g.minPlayers, maxPlayers: g.maxPlayers,
+        comingSoon: !!g.comingSoon,
+        canStart: !g.comingSoon && connectedCount >= g.minPlayers,
+        need: Math.max(0, g.minPlayers - connectedCount),
+      })),
+    };
+  }
+  function broadcastParty() { broadcastRaw(partyState()); }
+
   /* ---------- game lifecycle ---------- */
   function startGame(module) {
     if (active || module.comingSoon) return;
@@ -134,7 +154,7 @@ function startHost() {
     root.classList.remove('hidden');
     $('host-exit-btn').classList.remove('hidden');
 
-    const ctx = { root, players: publicPlayers, sendTo, sendAll, exit: exitGame };
+    const ctx = { root, players: publicPlayers, sendTo, sendAll, exit: exitGame, hostPlayerId: () => partyHostId };
     active = { module, instance: module.createHost(ctx) };
     broadcastRaw({ type: 'scene', scene: 'game', gameId: module.id });
     active.instance.start();
@@ -151,6 +171,7 @@ function startHost() {
     $('host-exit-btn').classList.add('hidden');
     $('lobby-screen').classList.remove('hidden');
     broadcastRaw({ type: 'scene', scene: 'lobby' });
+    broadcastParty();
     renderRoster();
     renderGameGrid();
   }
@@ -169,7 +190,8 @@ function startHost() {
       const chip = document.createElement('span');
       chip.className = 'player-chip' + (p.connected ? '' : ' offline');
       chip.style.setProperty('--chip-color', p.color);
-      chip.innerHTML = `<span class="chip-avatar">${p.avatar}</span>${escapeHtml(p.name)}`;
+      const crown = p.id === partyHostId ? '👑 ' : '';
+      chip.innerHTML = `<span class="chip-avatar">${p.avatar}</span>${crown}${escapeHtml(p.name)}`;
       roster.appendChild(chip);
     }
   }
@@ -265,6 +287,7 @@ function startHost() {
           ? { type: 'scene', scene: 'game', gameId: active.module.id }
           : { type: 'scene', scene: 'lobby' });
         renderRoster(); renderGameGrid();
+        broadcastParty();
         if (active && active.instance.onPlayerRejoin) {
           active.instance.onPlayerRejoin(publicPlayer(p.id));
         }
@@ -291,9 +314,38 @@ function startHost() {
         ? { type: 'scene', scene: 'game', gameId: active.module.id }
         : { type: 'scene', scene: 'lobby' });
       renderRoster(); renderGameGrid();
+      broadcastParty();
       if (active && active.instance.onPlayerJoin) {
         active.instance.onPlayerJoin(publicPlayer(id));
       }
+      return;
+    }
+
+    if (msg.type === 'claim-host') {
+      const pid = conn.metadata_ppid;
+      if (!pid || !players.has(pid)) return;
+      const current = partyHostId ? players.get(partyHostId) : null;
+      // Claimable when there's no host, the host seat is offline, or it's already you.
+      if (!current || !current.connected || partyHostId === pid) {
+        partyHostId = pid;
+        renderRoster();
+        broadcastParty();
+      }
+      return;
+    }
+
+    if (msg.type === 'pick-game') {
+      const pid = conn.metadata_ppid;
+      if (pid && pid === partyHostId && scene === 'lobby') {
+        const g = GAMES.find((x) => x.id === msg.gameId);
+        if (g) startGame(g);
+      }
+      return;
+    }
+
+    if (msg.type === 'exit-game') {
+      const pid = conn.metadata_ppid;
+      if (pid && pid === partyHostId && scene === 'game') exitGame();
       return;
     }
 
@@ -317,6 +369,7 @@ function startHost() {
     if (!p || p.conn !== conn) return; // an old, replaced connection
     p.connected = false;
     renderRoster(); renderGameGrid();
+    broadcastParty();
     if (active && active.instance.onPlayerLeave) active.instance.onPlayerLeave(pid);
   }
 
@@ -340,6 +393,9 @@ function startController(codeFromUrl) {
   let conn = null;
   let me = null;                  // {playerId, name, avatar, color}
   let activeCtrl = null;          // { module, instance }
+  let ctrlScene = 'lobby';        // 'lobby' | 'game'
+  let party = null;               // latest {type:'party'} state from the big screen
+  let iAmHost = false;
   let reconnectTimer = null;
   let everConnected = false;
 
@@ -434,22 +490,30 @@ function startController(codeFromUrl) {
       if (msg.scene === 'game') {
         const module = GAMES.find((g) => g.id === msg.gameId);
         if (!module) return;
+        ctrlScene = 'game';
         root.innerHTML = '';
         const ctx = {
           root,
           send: (data) => { if (conn && conn.open) conn.send({ type: 'game', data }); },
           playerId: me ? me.playerId : null,
           playerName: me ? me.name : '',
+          isHost: () => iAmHost,
         };
         activeCtrl = { module, instance: module.createController(ctx) };
         activeCtrl.instance.start();
       } else {
-        root.innerHTML = `
-          <div class="ctrl-wait">
-            <div class="ctrl-wait-emoji">🎉</div>
-            <p>You're in! Watch the big screen —<br />the host is picking a game.</p>
-          </div>`;
+        ctrlScene = 'lobby';
+        renderCtrlLobby();
       }
+      updateHostChrome();
+      return;
+    }
+
+    if (msg.type === 'party') {
+      party = msg;
+      iAmHost = !!(me && msg.hostId === me.playerId);
+      if (ctrlScene === 'lobby') renderCtrlLobby();
+      updateHostChrome();
       return;
     }
 
@@ -457,6 +521,71 @@ function startController(codeFromUrl) {
       if (activeCtrl && activeCtrl.instance.onMessage) activeCtrl.instance.onMessage(msg.data);
     }
   }
+
+  function renderCtrlLobby() {
+    const root = $('ctrl-game-root');
+
+    if (iAmHost && party) {
+      root.innerHTML = `
+        <div class="ctrl-menu">
+          <h2 class="ctrl-menu-title">👑 You're the host</h2>
+          <p class="ctrl-menu-sub">Pick a game for the group:</p>
+          <div class="ctrl-menu-list"></div>
+        </div>`;
+      const list = root.querySelector('.ctrl-menu-list');
+      for (const g of party.games) {
+        const btn = document.createElement('button');
+        btn.className = 'ctrl-menu-game';
+        btn.disabled = g.comingSoon || !g.canStart;
+        const note = g.comingSoon
+          ? 'Coming soon'
+          : (g.canStart ? `${g.minPlayers}–${g.maxPlayers} players`
+                        : `Need ${g.need} more player${g.need === 1 ? '' : 's'}`);
+        btn.innerHTML = `
+          <span class="ctrl-menu-emoji">${g.emoji}</span>
+          <span class="ctrl-menu-text">
+            <span class="ctrl-menu-name">${escapeHtml(g.title)}</span>
+            <span class="ctrl-menu-tag">${escapeHtml(g.tagline)}</span>
+          </span>
+          <span class="ctrl-menu-note${g.canStart ? '' : ' warn'}">${note}</span>`;
+        if (!btn.disabled) {
+          btn.addEventListener('click', () => {
+            if (conn && conn.open) conn.send({ type: 'pick-game', gameId: g.id });
+          });
+        }
+        list.appendChild(btn);
+      }
+      return;
+    }
+
+    const hostLive = !!(party && party.hostId && party.hostConnected);
+    const hostLine = hostLive
+      ? `Waiting for <b>👑 ${escapeHtml(party.hostName)}</b><br />to pick a game…`
+      : `You're in! Someone needs to lead<br />the party and pick the game.`;
+    root.innerHTML = `
+      <div class="ctrl-wait">
+        <div class="ctrl-wait-emoji">🎉</div>
+        <p>${hostLine}</p>
+        ${hostLive ? '' : '<button class="ctrl-btn ctrl-btn-big ctrl-claim-btn">👑 Become host</button>'}
+      </div>`;
+    const claim = root.querySelector('.ctrl-claim-btn');
+    if (claim) {
+      claim.addEventListener('click', () => {
+        if (conn && conn.open) conn.send({ type: 'claim-host' });
+      });
+    }
+  }
+
+  // The host phone gets a small "End game" button in the header during games.
+  function updateHostChrome() {
+    $('ctrl-host-exit').classList.toggle('hidden', !(iAmHost && ctrlScene === 'game'));
+  }
+
+  $('ctrl-host-exit').addEventListener('click', () => {
+    if (confirm('End this game for everyone and go back to the menu?')) {
+      if (conn && conn.open) conn.send({ type: 'exit-game' });
+    }
+  });
 
   function teardownCtrlGame() {
     if (activeCtrl) {
@@ -474,7 +603,7 @@ function startController(codeFromUrl) {
    Small utilities
    ============================================================ */
 function sanitizeName(s) {
-  return String(s || '').replace(/[<>]/g, '').trim().slice(0, 12);
+  return String(s || '').replace(/[<>]/g, '').trim().slice(0, 20);
 }
 function readJson(key) {
   try { return JSON.parse(sessionStorage.getItem(key)); } catch (e) { return null; }

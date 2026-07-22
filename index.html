@@ -38,6 +38,7 @@
       <!-- Game picker -->
       <main class="game-picker">
         <h2>Pick a game</h2>
+        <p class="picker-hint">Click here, or tap <b>Become host</b> on a phone to pick from there</p>
         <div id="game-grid" class="game-grid"></div>
       </main>
     </div>
@@ -70,7 +71,7 @@
       <input id="ctrl-code" class="ctrl-input" maxlength="4" autocomplete="off"
              autocapitalize="characters" placeholder="ABCD" />
       <label class="ctrl-label" for="ctrl-name">Your name</label>
-      <input id="ctrl-name" class="ctrl-input" maxlength="12" autocomplete="off" placeholder="e.g. Sam" />
+      <input id="ctrl-name" class="ctrl-input" maxlength="20" autocomplete="off" placeholder="e.g. Sam" />
       <button id="ctrl-join-btn" class="ctrl-btn ctrl-btn-big">Join</button>
       <div id="ctrl-join-status" class="ctrl-status"></div>
     </div>
@@ -81,6 +82,7 @@
     <header class="ctrl-header">
       <span id="ctrl-avatar" class="ctrl-avatar"></span>
       <span id="ctrl-player-name" class="ctrl-player-name"></span>
+      <button id="ctrl-host-exit" class="ctrl-host-exit hidden" title="End the game for everyone">⌂ End game</button>
       <span id="ctrl-conn-dot" class="ctrl-conn-dot" title="Connected"></span>
     </header>
     <div id="ctrl-game-root" class="ctrl-game-root">

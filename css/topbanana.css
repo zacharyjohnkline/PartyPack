@@ -101,21 +101,28 @@
 }
 
 .tb-submissions {
-  display: flex; flex-wrap: wrap; justify-content: center;
-  gap: 14px;
-  max-width: 900px;
-  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  max-width: 1040px;
+  display: flex; flex-wrap: wrap;
+  justify-content: center; align-content: center;
+  gap: clamp(10px, 1.4vw, 18px);
+  padding: 10px;               /* room for the shadow rings + winner scale-up */
+  overflow: visible;
 }
 
 .tb-card {
-  width: 150px; min-height: 100px;
+  width: clamp(118px, 13.5vw, 190px);
+  min-height: clamp(84px, 9.5vw, 126px);
   border-radius: 16px;
   display: flex; align-items: center; justify-content: center;
   text-align: center;
   padding: 12px;
   font-weight: 600;
-  font-size: 15px;
+  font-size: clamp(13px, 1.15vw, 16px);
   line-height: 1.25;
+  overflow-wrap: break-word;
   transition: transform 0.25s ease, opacity 0.25s ease, box-shadow 0.25s ease;
 }
 
@@ -146,6 +153,7 @@
 /* --- banner / overlays --- */
 .tb-banner {
   position: absolute;
+  z-index: 60;
   left: 50%; bottom: 6%;
   transform: translateX(-50%);
   background: var(--c-cream);
@@ -201,6 +209,92 @@
   box-shadow: 0 5px 0 #e8cede, 0 8px 16px rgba(0,0,0,0.08);
 }
 .tb-btn-soft:active { box-shadow: 0 2px 0 #e8cede; }
+
+/* --- full-screen round-winner celebration --- */
+
+.tb-winner-overlay {
+  position: absolute; inset: 0;
+  z-index: 40;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(circle at 50% 42%,
+    rgba(255, 248, 240, 0.97) 0%,
+    rgba(255, 214, 232, 0.95) 55%,
+    rgba(197, 225, 255, 0.95) 100%);
+  overflow: hidden;
+  animation: tb-ov-in 0.3s ease;
+}
+@keyframes tb-ov-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* game-over variant: confetti only, behind the banner, clicks pass through */
+.tb-winner-overlay.celebrate {
+  background: transparent;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.tb-confetti {
+  position: absolute;
+  top: -26px;
+  border-radius: 3px;
+  background: var(--c);
+  opacity: 0;
+  animation: tb-confetti-fall var(--t) linear var(--d) infinite;
+}
+@keyframes tb-confetti-fall {
+  0%   { transform: translateY(0) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(112vh) rotate(var(--r)); opacity: 1; }
+}
+
+.tb-winner-box {
+  position: relative;
+  z-index: 2;
+  text-align: center;
+  display: flex; flex-direction: column; align-items: center;
+  gap: 10px;
+  padding: 20px;
+  animation: tb-win-pop 0.5s cubic-bezier(0.2, 1.6, 0.4, 1);
+}
+@keyframes tb-win-pop {
+  from { transform: scale(0.5) translateY(40px); opacity: 0; }
+  to   { transform: scale(1) translateY(0); opacity: 1; }
+}
+
+.tb-winner-avatar {
+  font-size: clamp(70px, 11vw, 130px);
+  line-height: 1;
+  filter: drop-shadow(0 8px 14px rgba(0,0,0,0.18));
+  animation: tb-win-bounce 0.9s ease-in-out 0.3s infinite;
+}
+@keyframes tb-win-bounce {
+  0%, 100% { transform: translateY(0) rotate(-3deg); }
+  50%      { transform: translateY(-16px) rotate(3deg); }
+}
+
+.tb-winner-title {
+  font-family: var(--font-display);
+  font-size: clamp(30px, 4.6vw, 58px);
+  color: var(--c-text);
+  line-height: 1.1;
+  text-shadow: 0 3px 0 #fff;
+}
+
+.tb-winner-card {
+  background: linear-gradient(150deg, #ffe27a, #ffc93d 60%, #ffb347);
+  border-radius: 18px;
+  padding: 14px 28px;
+  font-weight: 700;
+  font-size: clamp(17px, 2.2vw, 26px);
+  color: #6b4300;
+  box-shadow: 0 10px 24px rgba(255, 170, 40, 0.4), 0 0 0 3px #fff;
+  max-width: min(620px, 86vw);
+  transform: rotate(-1.2deg);
+}
+
+.tb-winner-bananas {
+  font-size: clamp(15px, 1.8vw, 20px);
+  font-weight: 700;
+  color: var(--c-text-soft);
+}
 
 /* ---------------- CONTROLLER ---------------- */
 

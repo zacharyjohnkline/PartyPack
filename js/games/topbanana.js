@@ -193,10 +193,45 @@ function createHost(ctx) {
   }
   function hideBanner() { el.banner.className = 'tb-banner hidden'; }
 
+  function confettiHtml(count) {
+    const colors = ['#ff4d6d', '#ff9f4a', '#ffd93d', '#6bcf7f', '#4dabf7', '#b380ff', '#ff7ab8'];
+    let html = '';
+    for (let i = 0; i < count; i++) {
+      const left = (Math.random() * 100).toFixed(1);
+      const delay = (Math.random() * 1.4).toFixed(2);
+      const dur = (2.2 + Math.random() * 1.6).toFixed(2);
+      const rot = Math.round(360 + Math.random() * 720) * (Math.random() < 0.5 ? -1 : 1);
+      const w = Math.round(7 + Math.random() * 8);
+      const h = Math.round(10 + Math.random() * 10);
+      const c = colors[i % colors.length];
+      html += `<span class="tb-confetti" style="left:${left}%;width:${w}px;height:${h}px;--c:${c};--d:${delay}s;--t:${dur}s;--r:${rot}deg"></span>`;
+    }
+    return html;
+  }
+
+  function clearOverlay() {
+    for (const ov of ctx.root.querySelectorAll('.tb-winner-overlay')) ov.remove();
+  }
+
+  function showWinnerOverlay(winner, card, bananas) {
+    clearOverlay();
+    const ov = document.createElement('div');
+    ov.className = 'tb-winner-overlay';
+    ov.innerHTML = confettiHtml(90) + `
+      <div class="tb-winner-box">
+        <div class="tb-winner-avatar">${winner ? winner.avatar : '🏆'}</div>
+        <div class="tb-winner-title">${escapeHtml(winner ? winner.name : '?')} wins the round!</div>
+        <div class="tb-winner-card">“${escapeHtml(card)}”</div>
+        <div class="tb-winner-bananas">🍌 ${bananas} of ${WIN_SCORE} bananas</div>
+      </div>`;
+    ctx.root.appendChild(ov);
+  }
+
   /* ---------- round flow ---------- */
   function startRound() {
     clearTimeout(resultTimer);
     hideBanner();
+    clearOverlay();
 
     // Seat anyone who joined since last round.
     for (const p of ctx.players()) {
@@ -290,8 +325,7 @@ function createHost(ctx) {
       cardEl.classList.add(cardEl.dataset.key === key ? 'winner' : 'loser');
     }
     el.status.textContent = '';
-    showBanner(`🏆 <b>${escapeHtml(winner ? winner.name : '?')}</b> wins the round!<br>
-                <span class="tb-banner-card">“${escapeHtml(winning.card)}”</span>`, 'win');
+    showWinnerOverlay(winner, winning.card, scores.get(winning.playerId) || 0);
     renderScores();
 
     for (const s of submissions) discard.push(s.card);
@@ -313,6 +347,11 @@ function createHost(ctx) {
 
   function endGame(winnerId) {
     phase = 'gameover';
+    clearOverlay();
+    const rain = document.createElement('div');
+    rain.className = 'tb-winner-overlay celebrate';
+    rain.innerHTML = confettiHtml(120);
+    ctx.root.appendChild(rain);
     const w = playerById(winnerId);
     el.roundLabel.textContent = '';
     el.promptCard.classList.add('hidden');
@@ -333,6 +372,7 @@ function createHost(ctx) {
   }
 
   function resetGame() {
+    clearOverlay();
     deck = shuffle(ANSWERS);
     discard = [];
     prompts = shuffle(PROMPTS);
@@ -397,6 +437,14 @@ function createHost(ctx) {
 
       if (data.a === 'crown' && phase === 'judge' && playerId === judgeId) {
         crownWinner(data.key);
+        return;
+      }
+
+      // Game-over controls, honored only from the party host's phone.
+      const isPartyHost = ctx.hostPlayerId && playerId === ctx.hostPlayerId();
+      if (phase === 'gameover' && isPartyHost) {
+        if (data.a === 'again') resetGame();
+        else if (data.a === 'menu') ctx.exit();
       }
     },
 
@@ -553,11 +601,25 @@ function createController(ctx) {
         case 'judge-wait':     judgeWaitView(data); break;
         case 'judge-pick':     judgePickView(data); break;
         case 'round-result':   resultView(data); break;
-        case 'gameover':
-          waitView('🍌👑', data.winnerName
-            ? `<b>${escapeHtml(data.winnerName)}</b> is the Top Banana!<br>Watch the big screen.`
-            : 'Game over! Watch the big screen.');
+        case 'gameover': {
+          const line = data.winnerName
+            ? `<b>${escapeHtml(data.winnerName)}</b> is the Top Banana!`
+            : 'Game over!';
+          if (ctx.isHost && ctx.isHost()) {
+            ctx.root.innerHTML = `
+              <div class="ctrl-wait">
+                <div class="ctrl-wait-emoji">🍌👑</div>
+                <p>${line}</p>
+                <button class="ctrl-btn ctrl-btn-big tbc-again">Play again</button>
+                <button class="ctrl-btn ctrl-btn-big ctrl-btn-soft tbc-menu">Back to menu</button>
+              </div>`;
+            ctx.root.querySelector('.tbc-again').addEventListener('click', () => ctx.send({ a: 'again' }));
+            ctx.root.querySelector('.tbc-menu').addEventListener('click', () => ctx.send({ a: 'menu' }));
+          } else {
+            waitView('🍌👑', line + '<br>Watch the big screen.');
+          }
           break;
+        }
       }
     },
 
