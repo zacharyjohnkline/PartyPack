@@ -42,9 +42,12 @@ The big screen shows a golden prompt card; everyone else secretly plays the
 answer card from their hand of 7 that matches it best. The judge crowns a
 winner, who earns a banana. First to 5 bananas wins. All card text is original.
 
-**Sweet Path 🍭** — reserved on the menu as "coming soon." The comment block in
-`js/games/sweetpath.js` walks through how to port the existing single-file game
-into the module interface.
+**Sweet Path 🍭** (2–8 players) — the full candy board race, ported from the
+original game: the 3D spiral board, the opening button-mash for turn order,
+color-card draws with the rainbow bonus tracker, sticky goo spots, the Rainbow
+Bridge shortcut, Pong/Tron collision duels, the round-end Doodle Dash race, and
+the Wheel of Fortune. Three.js loads on demand from a CDN (via the import map
+in `index.html`), so the rest of the app stays light.
 
 ## Adding a game
 
