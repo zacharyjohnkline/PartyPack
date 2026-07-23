@@ -95,6 +95,7 @@ const HOST_HTML = `
 const CTRL_HTML = `
 <div id="sp-wrap">
   <div id="sp-status">Connecting…</div>
+  <button id="sp-hostbtn" class="sp-action"></button>
   <div id="sp-pad">
     <button id="sp-mash" disabled>MASH!</button>
     <button id="sp-draw" class="sp-action" disabled>🃏 Draw Card</button>
@@ -175,8 +176,22 @@ function createHost(ctx) {
     });
   }
 
+  // The big screen's current action button, mirrored to the party host's
+  // phone so they decide when the adventure starts.
+  let pendingHostBtn = null; // { label, fire }
+  function sendHostButton(label, fire) {
+    pendingHostBtn = label ? { label, fire } : null;
+    const pid = ctx.hostPlayerId && ctx.hostPlayerId();
+    if (pid) ctx.sendTo(pid, { type: 'hostBtn', label: label || null });
+  }
+
   function handlePhoneMsg(pid, msg) {
     if (!msg || typeof msg !== 'object') return;
+
+    if (msg.type === 'hostBtnPress') {
+      if (ctx.hostPlayerId && pid === ctx.hostPlayerId() && pendingHostBtn) pendingHostBtn.fire();
+      return;
+    }
 
     if (msg.type === 'winCtlAction') {
       if (ctx.hostPlayerId && pid === ctx.hostPlayerId()) {
@@ -330,7 +345,7 @@ function beginRound() {
   resultsEl.classList.remove('show');
   resultsEl.innerHTML = '';
   document.getElementById('mash-pads').style.display = '';
-  document.getElementById('mash-sub').textContent = 'Mash your button (phone pad or key) for 3 seconds. Most presses goes first, fewest goes last!';
+  document.getElementById('mash-sub').textContent = 'Mash your button (phone pad or key) for 3 seconds. Most presses goes first, fewest goes last! The party host\u2019s phone starts the clock. \ud83d\udc51';
   const cd = document.getElementById('mash-countdown');
   cd.classList.remove('go');
   cd.textContent = 'Ready?';
@@ -403,6 +418,7 @@ function showMashScreen(pendingPlayers) {
     clearTimeout(autoStartTimer);
     if (countdownStarted) return;
     countdownStarted = true;
+    sendHostButton(null);
     actionBtn.style.display = 'none';
     broadcastHostState();
     let n = 3;
@@ -476,6 +492,7 @@ function showMashScreen(pendingPlayers) {
     const advance = () => {
       if (advanced || gen !== contestGen) return;
       advanced = true;
+      sendHostButton(null);
       loadEngine().then(() => {
         if (gen !== contestGen) return;
         screen.classList.remove('show');
@@ -484,12 +501,12 @@ function showMashScreen(pendingPlayers) {
       }).catch(() => {});
     };
     actionBtn.onclick = advance;
-    setTimeout(() => { if (gen === contestGen) advance(); }, 4500);
+    sendHostButton('Begin Adventure!', advance);
   }
 
   actionBtn.textContent = 'Start the Clock!';
   actionBtn.onclick = startCountdown;
-  autoStartTimer = setTimeout(() => { if (gen === contestGen) startCountdown(); }, 6000);
+  sendHostButton('Start the Clock!', startCountdown);
   screen.classList.add('show');
 
   // Route phone-controller presses into this contest
@@ -2258,6 +2275,9 @@ function broadcastState() {
       if (pl) {
         seatPlayer(p);
         sendStateTo(connsBySlot.get(pl.slot));
+        if (ctx.hostPlayerId && p.id === ctx.hostPlayerId() && pendingHostBtn) {
+          ctx.sendTo(p.id, { type: 'hostBtn', label: pendingHostBtn.label });
+        }
       } else {
         ctx.sendTo(p.id, { type: 'wait', reason: "Adventure in progress — you'll be dealt in next game!" });
       }
@@ -2297,6 +2317,8 @@ function createController(ctx) {
     const winCtl = document.getElementById('sp-winctl');
     let wasMyTurn = false;
 
+    const hostBtn = document.getElementById('sp-hostbtn');
+    hostBtn.addEventListener('click', () => ctx.send({ type: 'hostBtnPress' }));
     mashBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); ctx.send({ type: 'press' }); });
     drawBtn.addEventListener('click', () => ctx.send({ type: 'draw' }));
     bonusBtn.addEventListener('click', () => ctx.send({ type: 'bonus' }));
@@ -2426,11 +2448,47 @@ function createController(ctx) {
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
   }
+  async function enableTilt(m) {
+    let granted = true;
+    try {
+      if (typeof DeviceOrientationEvent !== 'undefined' &&
+          typeof DeviceOrientationEvent.requestPermission === 'function') {
+        granted = (await DeviceOrientationEvent.requestPermission()) === 'granted';
+      }
+    } catch (e) { granted = false; }
+    if (granted && typeof DeviceOrientationEvent !== 'undefined' && 'ondeviceorientation' in window) {
+      let got = false;
+      m.onTilt = (e) => {
+        if (e.gamma === null || e.gamma === undefined) return;
+        got = true;
+        // gamma = left/right tilt in portrait; swap axes if the phone rotated
+        let g = e.gamma;
+        const ang = (screen.orientation && screen.orientation.angle) ?? window.orientation ?? 0;
+        if (ang === 90) g = -(e.beta ?? 0);
+        else if (ang === -90 || ang === 270) g = (e.beta ?? 0);
+        else if (ang === 180) g = -g;
+        m.tilt = Math.max(-1, Math.min(1, g / 22));
+      };
+      window.addEventListener('deviceorientation', m.onTilt);
+      mgMsg.textContent = 'Tilt your phone to steer \u2014 race to the finish line!';
+      setTimeout(() => {
+        if (!got && mg === m && m.kind === 'doodle') {
+          window.removeEventListener('deviceorientation', m.onTilt);
+          m.onTilt = null;
+          m.tilt = null;
+          mgMsg.textContent = 'No tilt sensor found \u2014 hold LEFT or RIGHT side to steer!';
+        }
+      }, 1500);
+    } else {
+      mgMsg.textContent = 'Hold LEFT or RIGHT side to steer \u2014 race to the finish line!';
+    }
+  }
+
   function startDoodlePhone(msg) {
     const W = Math.min(window.innerWidth - 30, 360);
     const H = Math.min(window.innerHeight - 200, 520);
     openMg('🦘 DOODLE DASH!', W, H, false);
-    mgMsg.textContent = 'Hold LEFT or RIGHT side to steer — race to the finish line!';
+    mgMsg.textContent = 'Get ready\u2026';
     const rng = mulberry32(msg.seed);
     const FINISH = 2600;
     const plats = [{ x: W / 2 - 30, y: -10, w: 60 }];
@@ -2441,6 +2499,7 @@ function createController(ctx) {
       kind: 'doodle', W, H, plats, FINISH, color: msg.color,
       x: W / 2, y: 0, vy: 10, vx: 0, maxY: 0, hold: 0, doneLocal: false,
       lastReport: 0, raf: null, ended: false,
+      tilt: null, onTilt: null, goBtn: null,
     };
     mg.onDown = (e) => { e.preventDefault(); const r = mgCanvas.getBoundingClientRect(); mg.hold = (e.clientX - r.left) < r.width / 2 ? -1 : 1; };
     mg.onUp = (e) => { e.preventDefault(); mg.hold = 0; };
@@ -2450,7 +2509,7 @@ function createController(ctx) {
     const G = -0.34, JUMP = 11, MOVE = 0.9, MAXVX = 6; // world-y grows upward
     function step() {
       if (!mg || mg.kind !== 'doodle' || mg.ended) return;
-      mg.vx += mg.hold * MOVE;
+      mg.vx += (mg.tilt !== null ? mg.tilt * 1.7 : mg.hold) * MOVE;
       mg.vx = Math.max(-MAXVX, Math.min(MAXVX, mg.vx)) * 0.96;
       mg.x += mg.vx;
       if (mg.x < -12) mg.x = W + 12; if (mg.x > W + 12) mg.x = -12; // wrap
@@ -2522,12 +2581,24 @@ function createController(ctx) {
       mgCtx.font = 'bold 15px Fredoka'; mgCtx.textAlign = 'left';
       mgCtx.fillText(Math.round(Math.min(1, mg.maxY / mg.FINISH) * 100) + '%', 10, 22);
     }
-    step();
+    const goBtn = document.createElement('button');
+    goBtn.id = 'sp-doodle-go';
+    goBtn.textContent = '\ud83d\udcf1 Tap to start \u2014 tilt to steer!';
+    mgScreen.appendChild(goBtn);
+    mg.goBtn = goBtn;
+    goBtn.addEventListener('click', async () => {
+      goBtn.remove();
+      if (mg) mg.goBtn = null;
+      await enableTilt(mg);
+      step();
+    });
   }
   function stopDoodle() {
     if (mg && mg.kind === 'doodle') {
       mg.ended = true;
       if (mg.raf) cancelAnimationFrame(mg.raf);
+      if (mg.onTilt) { window.removeEventListener('deviceorientation', mg.onTilt); mg.onTilt = null; }
+      if (mg.goBtn) { mg.goBtn.remove(); mg.goBtn = null; }
       mgScreen.removeEventListener('pointerdown', mg.onDown);
       mgScreen.removeEventListener('pointerup', mg.onUp);
       mgScreen.removeEventListener('pointercancel', mg.onUp);
@@ -2670,6 +2741,13 @@ function createController(ctx) {
       } else if (msg.type === 'winCtl') {
         winCtl.classList.add('show');
         statusEl.textContent = '👑 You have the controls!';
+      } else if (msg.type === 'hostBtn') {
+        if (msg.label) {
+          hostBtn.textContent = '\ud83d\udc51 ' + msg.label;
+          hostBtn.classList.add('show');
+        } else {
+          hostBtn.classList.remove('show');
+        }
       } else if (msg.type === 'wait') {
         wrap.classList.remove('your-turn');
         mashBtn.disabled = true;
