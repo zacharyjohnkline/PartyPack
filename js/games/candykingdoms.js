@@ -36,18 +36,19 @@ const BLD = {
   bakery: { hp: 320, cost: 120, time: 110, r: 34, label: 'Bakery' },
   shack:  { hp: 220, cost: 80,  time: 80,  r: 26, label: 'Sugar Shack' },
   camp:   { hp: 260, cost: 100, time: 90,  r: 30, label: 'Candy Camp' },
+  tower:  { hp: 380, cost: 110, time: 100, r: 28, label: 'Frosting Tower', range: 160, dmg: 10, cd: 10 },
 };
-const TYPE_IDX = ['castle', 'bakery', 'shack', 'camp'];
+const TYPE_IDX = ['castle', 'bakery', 'shack', 'camp', 'tower'];
 
 const SUPPLY_BASE = 6, SUPPLY_PER_SHACK = 4, SUPPLY_MAX = 30;
 const START_CANDY = 150, START_WORKERS = 3;
 
-const MINE = { r: 34, starter: 500, lane: 800, rim: 1400 };
+/* mines never run out — but the farther out, the sweeter the haul */
+const MINE = { r: 34, yield: { starter: 10, lane: 14, rim: 20 } };
 const HARVEST_LEASH = 270;    // a mine works only near one of your drop-offs
 const BUILD_LEASH = 240;      // build near your buildings or troops…
 const QUEUE_MAX = 5;
 
-const THR_MIN = 1, THR_MAX = 30;
 const SEP_R = 20;
 
 /* ================= geometry (pure) ================= */
@@ -71,12 +72,12 @@ function buildWorld(n) {
     const hold = polar(a, ARENA_R * 0.38);
     arms.push({ seat: i, angle: a, base, muster, lane, hold });
 
-    /* three mines per arm: cozy starter, mid-lane, rich arena rim */
-    mines.push({ x: base.x + perp.x * 145, y: base.y + perp.y * 145, max: MINE.starter, kind: 'starter', arm: i });
+    /* three bottomless mines per arm: cozy starter, mid-lane, rich arena rim */
+    mines.push({ x: base.x + perp.x * 145, y: base.y + perp.y * 145, kind: 'starter', arm: i });
     const mid = polar(a, (ARENA_R + BASE_R) / 2);
-    mines.push({ x: mid.x + perp.x * 125, y: mid.y + perp.y * 125, max: MINE.lane, kind: 'lane', arm: i });
+    mines.push({ x: mid.x + perp.x * 125, y: mid.y + perp.y * 125, kind: 'lane', arm: i });
     const rim = polar(a, ARENA_R + 115);
-    mines.push({ x: rim.x + perp.x * 95, y: rim.y + perp.y * 95, max: MINE.rim, kind: 'rim', arm: i });
+    mines.push({ x: rim.x + perp.x * 95, y: rim.y + perp.y * 95, kind: 'rim', arm: i });
   }
   return { n, arms, mines, arenaR: ARENA_R, plotR: PLOT_R, baseR: BASE_R, worldR: WORLD_R, castleR: CASTLE.r };
 }
@@ -88,7 +89,7 @@ function makeSim(n) {
   const players = [], buildings = [], units = [];
   let uid = 1;
   for (let i = 0; i < n; i++) {
-    players.push({ seat: i, candy: START_CANDY, castleHp: CASTLE.hp, elim: false, send: false, thr: 8, target: -1 });
+    players.push({ seat: i, candy: START_CANDY, castleHp: CASTLE.hp, elim: false, mode: 'stop', target: -1 });
     const b = world.arms[i].base;
     buildings.push({ id: 'c' + i, seat: i, type: 'castle', x: b.x, y: b.y, hp: CASTLE.hp, maxHp: CASTLE.hp, prog: 1, queue: [] });
     for (let w = 0; w < START_WORKERS; w++) {
@@ -97,7 +98,6 @@ function makeSim(n) {
   }
   return {
     tick: 0, world, players, buildings, units,
-    mines: world.mines.map((m) => m.max),
     fx: [], nextUid: uid, nextBid: 1,
     over: false, winner: -1,
   };
@@ -186,13 +186,54 @@ function build(sim, seat, type, x, y) {
   return true;
 }
 
-function setSend(sim, seat, on, thr) {
+function setMode(sim, seat, mode) {
   const p = sim.players[seat];
   if (!p || p.elim) return;
-  p.send = !!on;
-  if (typeof thr === 'number' && isFinite(thr)) {
-    p.thr = Math.max(THR_MIN, Math.min(THR_MAX, Math.round(thr)));
+  if (mode !== 'send' && mode !== 'stop') return;
+  p.mode = mode;
+  if (mode === 'stop') {
+    /* everyone advancing digs in right where they are (they'll still fight back) */
+    for (const u of sim.units) {
+      if (u.seat === seat && u.kind === 'guard' && (u.st === 'path' || u.st === 'hold')) {
+        u.st = 'stand'; u.path = null;
+      }
+    }
   }
+}
+
+/* which snowflake arm is this unit standing in? */
+function nearestArm(world, x, y) {
+  const a = Math.atan2(y, x);
+  let best = 0, bestD = Infinity;
+  for (const arm of world.arms) {
+    let d = Math.abs(a - arm.angle);
+    if (d > Math.PI) d = Math.PI * 2 - d;
+    if (d < bestD) { bestD = d; best = arm.seat; }
+  }
+  return best;
+}
+
+/* put an idle/standing guard back on the road: toward the arena, or —
+   if it's already deep in the target's arm — onward to their castle */
+function assignAdvance(sim, u, p) {
+  const world = sim.world;
+  if (Math.hypot(u.x, u.y) < ARENA_R + 40) { u.st = 'hold'; u.path = null; return; }
+  const armIdx = nearestArm(world, u.x, u.y);
+  const arm = world.arms[armIdx];
+  let ni = 0, bestD = Infinity;
+  for (let i = 0; i < arm.lane.length; i++) {
+    const d = dist(u.x, u.y, arm.lane[i].x, arm.lane[i].y);
+    if (d < bestD) { bestD = d; ni = i; }
+  }
+  let path;
+  if (p.target >= 0 && armIdx === p.target && !sim.players[p.target].elim) {
+    path = arm.lane.slice(0, ni + 1).reverse().map((q) => ({ x: q.x, y: q.y }));
+    path.push({ x: arm.base.x, y: arm.base.y, castle: p.target });
+  } else {
+    path = arm.lane.slice(ni).map((q) => ({ x: q.x, y: q.y }));
+    path.push({ x: arm.hold.x, y: arm.hold.y, hold: true });
+  }
+  u.st = 'path'; u.path = path; u.pi = 0;
 }
 
 function setTarget(sim, seat, target) {
@@ -209,13 +250,6 @@ function pushPath(world, targetSeat) {
   path.push({ x: arm.base.x, y: arm.base.y, castle: targetSeat });
   return path;
 }
-function marchPath(world, seat) {
-  const arm = world.arms[seat];
-  const path = arm.lane.map((pt) => ({ x: pt.x, y: pt.y }));
-  path.push({ x: arm.hold.x, y: arm.hold.y, hold: true });
-  return path;
-}
-
 function bldRadius(b) { return b.type === 'castle' ? CASTLE.r : BLD[b.type].r; }
 
 /* nearest living enemy unit or building within `radius` of u */
@@ -245,18 +279,19 @@ function nearestDropoff(sim, seat, x, y) {
   }
   return best;
 }
-/* a mine is workable if it has stock and sits near one of your drop-offs */
+/* a mine is workable if it sits near one of your drop-offs; helpers
+   prefer the sweetest reachable mine, nearest as a tie-break */
 function pickMine(sim, seat, x, y) {
-  let best = -1, bestD = Infinity;
+  let best = -1, bestY = -1, bestD = Infinity;
   const drops = dropoffs(sim, seat);
   for (let i = 0; i < sim.world.mines.length; i++) {
-    if (sim.mines[i] <= 0) continue;
     const m = sim.world.mines[i];
     let leashed = false;
     for (const b of drops) if (dist(m.x, m.y, b.x, b.y) <= HARVEST_LEASH) { leashed = true; break; }
     if (!leashed) continue;
+    const y2 = MINE.yield[m.kind];
     const d = dist(x, y, m.x, m.y);
-    if (d < bestD) { bestD = d; best = i; }
+    if (y2 > bestY || (y2 === bestY && d < bestD)) { bestY = y2; bestD = d; best = i; }
   }
   return best;
 }
@@ -283,6 +318,10 @@ function eliminate(sim, seat, bySeat) {
     if (b.seat === seat && b.hp > 0 && b.type !== 'castle') { b.hp = 0; sim.fx.push({ t: 'poof', x: b.x, y: b.y }); }
   }
   for (const q of sim.players) if (q.target === seat) q.target = -1;
+  /* anyone marching on the fallen castle digs in for new orders */
+  for (const u of sim.units) {
+    if (u.hp > 0 && u.path && u.path.some((wp) => wp.castle === seat)) { u.st = 'stand'; u.path = null; }
+  }
   sim.lastElim = { seat, bySeat: typeof bySeat === 'number' ? bySeat : -1 };
 
   const alive = sim.players.filter((q) => !q.elim);
@@ -328,15 +367,37 @@ function stepSim(sim) {
         sim.fx.push({ t: 'spawn', x: b.x + jx, y: b.y + jy });
       }
     }
+    /* frosting towers splat intruders */
+    if (b.type === 'tower') {
+      b.cd = Math.max(0, (b.cd || 0) - 1);
+      if (b.cd === 0) {
+        let tgt = null, tgtD = BLD.tower.range;
+        for (const e of sim.units) {
+          if (e.seat === b.seat || e.hp <= 0) continue;
+          const d = dist(b.x, b.y, e.x, e.y);
+          if (d < tgtD) { tgtD = d; tgt = e; }
+        }
+        if (tgt) {
+          tgt.hp -= BLD.tower.dmg;
+          b.cd = BLD.tower.cd;
+          sim.fx.push({ t: 'zap', x: b.x, y: b.y, x2: tgt.x, y2: tgt.y });
+          sim.fx.push({ t: 'hit', x: tgt.x, y: tgt.y });
+          if (tgt.hp <= 0) sim.fx.push({ t: 'poof', x: tgt.x, y: tgt.y });
+        }
+      }
+    }
   }
 
-  /* send: enough guards mustered → the squad marches */
+  /* Send mode: everyone not already advancing hits the road — including
+     troops fresh out of the oven, so the pressure is continuous */
   for (const p of sim.players) {
-    if (p.elim || !p.send) continue;
-    const mustered = sim.units.filter((u) => u.seat === p.seat && u.kind === 'guard' && u.st === 'muster' && u.hp > 0);
-    if (mustered.length >= p.thr) {
-      const path = marchPath(world, p.seat);
-      for (const u of mustered) { u.st = 'path'; u.path = path.map((q) => ({ ...q })); u.pi = 0; }
+    if (p.elim || p.mode !== 'send') continue;
+    let horn = false;
+    for (const u of sim.units) {
+      if (u.seat !== p.seat || u.kind !== 'guard' || u.hp <= 0) continue;
+      if (u.st === 'muster' || u.st === 'stand') { assignAdvance(sim, u, p); horn = true; }
+    }
+    if (horn && sim.tick % 20 === 0) {
       sim.fx.push({ t: 'horn', x: world.arms[p.seat].muster.x, y: world.arms[p.seat].muster.y });
     }
   }
@@ -362,20 +423,16 @@ function stepSim(sim) {
           if (home && dist(u.x, u.y, home.x, home.y) > 140) moveToward(u, home.x, home.y, WORKER.speed);
         }
       } else if (u.st === 'toMine') {
-        if (u.mineIdx < 0 || sim.mines[u.mineIdx] <= 0) { u.st = 'idle'; continue; }
+        if (u.mineIdx < 0) { u.st = 'idle'; continue; }
         const m = world.mines[u.mineIdx];
         moveToward(u, m.x, m.y, WORKER.speed);
         if (dist(u.x, u.y, m.x, m.y) <= MINE.r + 16) { u.st = 'mining'; u.mt = WORKER.mineTicks; }
       } else if (u.st === 'mining') {
         u.mt--;
         if (u.mt <= 0) {
-          const stock = sim.mines[u.mineIdx] || 0;
-          const take = Math.min(WORKER.carry, stock);
-          if (take > 0) {
-            sim.mines[u.mineIdx] = stock - take;
-            if (sim.mines[u.mineIdx] <= 0) sim.fx.push({ t: 'poof', x: world.mines[u.mineIdx].x, y: world.mines[u.mineIdx].y });
-            u.carry = take; u.st = 'toDrop';
-          } else { u.st = 'idle'; }
+          const m = world.mines[u.mineIdx];
+          if (m) { u.carry = MINE.yield[m.kind]; u.st = 'toDrop'; }
+          else u.st = 'idle';
         }
       } else if (u.st === 'toDrop') {
         const drop = nearestDropoff(sim, u.seat, u.x, u.y);
@@ -423,15 +480,20 @@ function stepSim(sim) {
       const arrive = typeof wp.castle === 'number' ? CASTLE.r + GUARD.range - 6 : 14;
       if (dist(u.x, u.y, wp.x, wp.y) <= arrive) {
         if (wp.hold) { u.st = 'hold'; u.path = null; }
-        else if (typeof wp.castle === 'number') { /* handled by aggro */ }
+        else if (typeof wp.castle === 'number') {
+          /* attack handled by aggro — but if that castle already crumbled,
+             dig in so Send mode can re-route this troop */
+          if (sim.players[wp.castle].elim) { u.st = 'stand'; u.path = null; }
+        }
         else if (u.pi < u.path.length - 1) u.pi++;
       }
     } else if (u.st === 'hold') {
       const p = sim.players[u.seat];
-      if (p.target >= 0 && !sim.players[p.target].elim) {
+      if (p.mode === 'send' && p.target >= 0 && !sim.players[p.target].elim) {
         u.st = 'path'; u.path = pushPath(world, p.target); u.pi = 0;
       }
     }
+    /* 'stand' troops hold their ground — the aggro check above still lets them fight */
   }
 
   /* gentle crowding so squads read as crowds, not a dot */
@@ -466,13 +528,13 @@ function snapshot(sim) {
   const b = sim.buildings.map((x) => [x.id, x.seat, TYPE_IDX.indexOf(x.type), Math.round(x.x), Math.round(x.y), x.hp, Math.round(x.prog * 100), x.queue.length]);
   const pl = sim.players.map((p) => [
     p.seat, Math.floor(p.candy), Math.round(p.castleHp), p.elim ? 1 : 0,
-    p.send ? 1 : 0, p.thr, p.target,
+    p.mode === 'send' ? 1 : 0, p.target,
     supplyUsed(sim, p.seat), supplyCap(sim, p.seat),
-    sim.units.filter((x) => x.seat === p.seat && x.kind === 'guard' && x.st === 'muster').length,
+    sim.units.filter((x) => x.seat === p.seat && x.kind === 'guard' && (x.st === 'muster' || x.st === 'stand')).length,
   ]);
-  const fx = sim.fx.map((f) => [f.t, Math.round(f.x), Math.round(f.y)]);
+  const fx = sim.fx.map((f) => [f.t, Math.round(f.x), Math.round(f.y), f.x2 !== undefined ? Math.round(f.x2) : 0, f.y2 !== undefined ? Math.round(f.y2) : 0]);
   sim.fx = [];
-  const snap = { k: 'snap', n: sim.tick, u, b, m: sim.mines.slice(), pl, fx };
+  const snap = { k: 'snap', n: sim.tick, u, b, pl, fx };
   if (sim.over) { snap.over = 1; snap.winner = sim.winner; }
   if (sim.lastElim) { snap.elim = sim.lastElim; sim.lastElim = null; }
   return snap;
@@ -564,32 +626,24 @@ function drawTerrain(g, world, seats, t) {
   g.stroke(); g.restore();
 }
 
-function drawMine(g, x, y, stock, max) {
-  const frac = Math.max(0, Math.min(1, stock / max));
+function drawMine(g, x, y, kind) {
   g.save(); g.translate(x, y);
-  if (frac <= 0) {
-    g.fillStyle = '#e3d5c0';
-    g.beginPath(); g.arc(0, 6, 16, 0, Math.PI * 2); g.fill();
-    g.font = '14px sans-serif'; g.textAlign = 'center'; g.globalAlpha = 0.7;
-    g.fillText('🍂', 0, 10);
-    g.restore(); return;
-  }
   const mounds = [
     { dx: -14, dy: 6, r: 14, c: '#ff8fb3' },
     { dx: 13, dy: 7, r: 12, c: '#7fd4ff' },
     { dx: 0, dy: -6, r: 16, c: '#ffd93d' },
   ];
+  const scale = kind === 'rim' ? 1.25 : kind === 'lane' ? 1.1 : 1;
   for (const m of mounds) {
-    const r = m.r * (0.45 + 0.55 * frac);
+    const r = m.r * scale;
     g.fillStyle = m.c; g.strokeStyle = shade(m.c === '#ffd93d' ? '#d9a800' : m.c, 0.75); g.lineWidth = 2.5;
-    g.beginPath(); g.arc(m.dx * (0.6 + 0.4 * frac), m.dy, r, Math.PI, 0);
-    g.quadraticCurveTo(m.dx * (0.6 + 0.4 * frac), m.dy + r * 0.8, m.dx * (0.6 + 0.4 * frac) - r, m.dy);
+    g.beginPath(); g.arc(m.dx * scale, m.dy, r, Math.PI, 0);
+    g.quadraticCurveTo(m.dx * scale, m.dy + r * 0.8, m.dx * scale - r, m.dy);
     g.closePath(); g.fill(); g.stroke();
   }
   g.font = '13px sans-serif'; g.textAlign = 'center';
-  g.fillText('✨', 12, -14);
-  g.fillStyle = 'rgba(74,37,69,.25)'; rr(g, -22, 24, 44, 6, 3); g.fill();
-  g.fillStyle = '#ffb020'; rr(g, -22, 24, Math.max(4, 44 * frac), 6, 3); g.fill();
+  g.fillText('✨', 14 * scale, -16 * scale);
+  if (kind === 'rim') g.fillText('✨', -16, -20);
   g.restore();
 }
 
@@ -665,6 +719,21 @@ function drawBuilding(g, type, x, y, color, hp, maxHp, prog) {
     g.beginPath(); g.moveTo(0, -26); g.lineTo(0, -38); g.stroke();
     g.fillStyle = '#ffd93d';
     g.beginPath(); g.moveTo(0, -38); g.lineTo(14, -33); g.lineTo(0, -28); g.closePath(); g.fill(); g.stroke();
+  } else if (type === 'tower') {
+    /* a cupcake watchtower: wrapper, frosting swirl, cherry on top */
+    g.fillStyle = '#fff0dd';
+    g.beginPath(); g.moveTo(-18, 20); g.lineTo(-13, -8); g.lineTo(13, -8); g.lineTo(18, 20); g.closePath();
+    g.fill(); g.stroke();
+    g.lineWidth = 2;
+    for (const lx of [-8, 0, 8]) { g.beginPath(); g.moveTo(lx * 1.3, 18); g.lineTo(lx, -6); g.stroke(); }
+    g.lineWidth = 3;
+    g.fillStyle = color;
+    g.beginPath(); g.arc(0, -14, 16, Math.PI, 0);
+    g.arc(7, -22, 9, Math.PI * 0.9, Math.PI * 1.9);
+    g.arc(-6, -28, 8, 0.2, Math.PI * 1.2, true);
+    g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#ff4d6d';
+    g.beginPath(); g.arc(0, -36, 5, 0, Math.PI * 2); g.fill(); g.stroke();
   }
   g.globalAlpha = 1;
 
@@ -754,6 +823,11 @@ function drawFx(g, fx, now) {
     } else if (f.t === 'spawn' || f.t === 'horn') {
       g.strokeStyle = '#b380ff'; g.lineWidth = 3;
       g.beginPath(); g.arc(0, 0, 4 + k * 18, 0, Math.PI * 2); g.stroke();
+    } else if (f.t === 'zap' && f.x2 !== undefined) {
+      g.strokeStyle = '#ff8fb3'; g.lineWidth = 5; g.lineCap = 'round';
+      g.beginPath(); g.moveTo(0, -20); g.lineTo(f.x2 - f.x, f.y2 - f.y); g.stroke();
+      g.strokeStyle = '#fff'; g.lineWidth = 2;
+      g.beginPath(); g.moveTo(0, -20); g.lineTo(f.x2 - f.x, f.y2 - f.y); g.stroke();
     }
     g.restore();
   }
@@ -766,9 +840,7 @@ function fitZoom(w, h) { return Math.min(w, h) / (WORLD_R * 2.15); }
              players:[[seat,candy,castleHp,elim,...]], drawUnit(cb)} */
 function drawScene(g, world, seats, view, now) {
   drawTerrain(g, world, seats, now);
-  for (let i = 0; i < world.mines.length; i++) {
-    drawMine(g, world.mines[i].x, world.mines[i].y, view.mines[i], world.mines[i].max);
-  }
+  for (const m of world.mines) drawMine(g, m.x, m.y, m.kind);
   for (const b of view.buildings) {
     const s = seats[b[1]];
     const type = TYPE_IDX[b[2]];
@@ -898,8 +970,7 @@ function createHost(ctx) {
       seats: seats.map((s) => ({ seat: s.seat, name: s.name, avatar: s.avatar, color: s.color })),
       cfg: {
         worker: WORKER.cost, guard: GUARD.cost,
-        bakery: BLD.bakery.cost, shack: BLD.shack.cost, camp: BLD.camp.cost,
-        thrMin: THR_MIN, thrMax: THR_MAX,
+        bakery: BLD.bakery.cost, shack: BLD.shack.cost, camp: BLD.camp.cost, tower: BLD.tower.cost,
       },
     });
   }
@@ -914,7 +985,7 @@ function createHost(ctx) {
         build(sim, seat, data.type, data.x, data.y);
       }
     }
-    else if (data.k === 'send') setSend(sim, seat, data.on, data.thr);
+    else if (data.k === 'mode') setMode(sim, seat, data.mode);
     else if (data.k === 'target') setTarget(sim, seat, typeof data.seat === 'number' ? data.seat : -1);
     else if (data.k === 'need-init') sendInit(playerId);
   }
@@ -983,7 +1054,6 @@ function createHost(ctx) {
 
     const alpha = Math.max(0, Math.min(1, (now - lastTickAt) / TICK_MS));
     drawScene(g, sim.world, seats, {
-      mines: sim.mines,
       buildings: sim.buildings.map((b) => [b.id, b.seat, TYPE_IDX.indexOf(b.type), b.x, b.y, b.hp, Math.round(b.prog * 100), b.queue.length]),
       players: sim.players.map((p) => [p.seat, 0, p.castleHp, p.elim ? 1 : 0]),
       eachUnit: (cb) => {
@@ -1027,28 +1097,28 @@ const CTRL_HTML = `
       <div class="ck-supply">🏠 <b class="ck-sup-n">0/6</b></div>
       <div class="ck-armysize">⚔️ <b class="ck-army-n">0</b> ready</div>
     </div>
-    <div class="ck-train-row">
-      <button class="ck-train" data-unit="worker">🧑‍🔧 Helper <span class="ck-price ck-price-worker"></span><span class="ck-q ck-q-worker hidden"></span></button>
-      <button class="ck-train" data-unit="guard">🍪 Guard <span class="ck-price ck-price-guard"></span><span class="ck-q ck-q-guard hidden"></span></button>
+    <div class="ck-tabs">
+      <button class="ck-tab is-on" data-tab="attack">⚔️ Attack</button>
+      <button class="ck-tab" data-tab="build">🔨 Build</button>
     </div>
-    <div class="ck-build-row">
-      <button class="ck-build" data-type="bakery">🍪<span>Bakery</span><span class="ck-price ck-price-bakery"></span></button>
-      <button class="ck-build" data-type="shack">🍭<span>Sugar Shack</span><span class="ck-price ck-price-shack"></span></button>
-      <button class="ck-build" data-type="camp">⛺<span>Candy Camp</span><span class="ck-price ck-price-camp"></span></button>
-    </div>
-    <div class="ck-sendbox">
-      <label class="ck-sendrow">
-        <span class="ck-sendlabel">Send armies</span>
-        <span class="ck-switch"><input type="checkbox" class="ck-send-toggle"><span class="ck-knob"></span></span>
-      </label>
-      <div class="ck-thr-row">
-        <span class="ck-thr-cap">march at <b class="ck-thr-n">8</b> troops</span>
-        <input type="range" class="ck-thr" min="1" max="30" value="8">
+    <div class="ck-tabpage" data-page="attack">
+      <div class="ck-warbtns">
+        <button class="ck-warbtn ck-warbtn-send">🚩 SEND!</button>
+        <button class="ck-warbtn ck-warbtn-stop">✋ STOP</button>
       </div>
-    </div>
-    <div class="ck-targets">
-      <div class="ck-targets-cap">Attack who?</div>
       <div class="ck-target-row"></div>
+    </div>
+    <div class="ck-tabpage hidden" data-page="build">
+      <div class="ck-train-row">
+        <button class="ck-train" data-unit="worker">🧑‍🔧 Helper <span class="ck-price ck-price-worker"></span><span class="ck-q ck-q-worker hidden"></span></button>
+        <button class="ck-train" data-unit="guard">🍪 Guard <span class="ck-price ck-price-guard"></span><span class="ck-q ck-q-guard hidden"></span></button>
+      </div>
+      <div class="ck-build-row">
+        <button class="ck-build" data-type="bakery">🍪<span>Bakery</span><span class="ck-price ck-price-bakery"></span></button>
+        <button class="ck-build" data-type="shack">🍭<span>Shack</span><span class="ck-price ck-price-shack"></span></button>
+        <button class="ck-build" data-type="camp">⛺<span>Camp</span><span class="ck-price ck-price-camp"></span></button>
+        <button class="ck-build" data-type="tower">🧁<span>Tower</span><span class="ck-price ck-price-tower"></span></button>
+      </div>
     </div>
   </div>
   <div class="ck-ctrl-out hidden">
@@ -1093,7 +1163,7 @@ function createController(ctx) {
       seats = data.seats;
       cfg = data.cfg;
       ctx.root.querySelector('.ck-ctrl-wait').classList.add('hidden');
-      for (const key of ['worker', 'guard', 'bakery', 'shack', 'camp']) {
+      for (const key of ['worker', 'guard', 'bakery', 'shack', 'camp', 'tower']) {
         const el = ctx.root.querySelector('.ck-price-' + key);
         if (el) el.textContent = cfg[key] + '🍬';
       }
@@ -1111,7 +1181,7 @@ function createController(ctx) {
     if (data.k === 'snap') {
       prev = cur;
       cur = { at: performance.now(), snap: data };
-      for (const f of data.fx) fxLive.push({ t: f[0], x: f[1], y: f[2], t0: cur.at });
+      for (const f of data.fx) fxLive.push({ t: f[0], x: f[1], y: f[2], x2: f[3], y2: f[4], t0: cur.at });
       me = data.pl.find((r) => r[0] === mySeat) || null;
       updatePanel(data);
       if (data.over) showOver(data.winner);
@@ -1132,12 +1202,17 @@ function createController(ctx) {
       });
     });
     r.querySelector('.ck-place-cancel').addEventListener('click', stopPlacing);
-    const toggle = r.querySelector('.ck-send-toggle');
-    const thr = r.querySelector('.ck-thr');
-    const pushSend = () => ctx.send({ k: 'send', on: toggle.checked, thr: parseInt(thr.value, 10) });
-    toggle.addEventListener('change', pushSend);
-    thr.addEventListener('input', () => { r.querySelector('.ck-thr-n').textContent = thr.value; });
-    thr.addEventListener('change', pushSend);
+    r.querySelectorAll('.ck-tab').forEach((tab) => {
+      tab.addEventListener('click', () => {
+        r.querySelectorAll('.ck-tab').forEach((t) => t.classList.toggle('is-on', t === tab));
+        r.querySelectorAll('.ck-tabpage').forEach((pg) => {
+          pg.classList.toggle('hidden', pg.dataset.page !== tab.dataset.tab);
+        });
+        if (tab.dataset.tab !== 'build') stopPlacing();
+      });
+    });
+    r.querySelector('.ck-warbtn-send').addEventListener('click', () => ctx.send({ k: 'mode', mode: 'send' }));
+    r.querySelector('.ck-warbtn-stop').addEventListener('click', () => ctx.send({ k: 'mode', mode: 'stop' }));
   }
 
   function startPlacing(type) {
@@ -1172,12 +1247,12 @@ function createController(ctx) {
     if (!me) return;
     const r = ctx.root;
     r.querySelector('.ck-candy-n').textContent = me[1];
-    r.querySelector('.ck-sup-n').textContent = me[7] + '/' + me[8];
-    r.querySelector('.ck-army-n').textContent = me[9];
+    r.querySelector('.ck-sup-n').textContent = me[6] + '/' + me[7];
+    r.querySelector('.ck-army-n').textContent = me[8];
 
     const myBld = snap.b.filter((b) => b[1] === mySeat);
     const hasBakery = myBld.some((b) => TYPE_IDX[b[2]] === 'bakery' && b[6] >= 100);
-    const supFull = me[7] >= me[8];
+    const supFull = me[6] >= me[7];
     const wq = myBld.filter((b) => TYPE_IDX[b[2]] === 'castle').reduce((s, b) => s + b[7], 0);
     const gq = myBld.filter((b) => TYPE_IDX[b[2]] === 'bakery').reduce((s, b) => s + b[7], 0);
     setQ('.ck-q-worker', wq); setQ('.ck-q-guard', gq);
@@ -1190,10 +1265,11 @@ function createController(ctx) {
       btn.disabled = !!me[3] || me[1] < cfg[btn.dataset.type];
     });
 
-    const toggle = r.querySelector('.ck-send-toggle');
-    if (toggle !== document.activeElement) toggle.checked = !!me[4];
+    const sending = !!me[4];
+    r.querySelector('.ck-warbtn-send').classList.toggle('is-on', sending);
+    r.querySelector('.ck-warbtn-stop').classList.toggle('is-on', !sending);
     r.querySelectorAll('.ck-target').forEach((btn) => {
-      btn.classList.toggle('is-on', parseInt(btn.dataset.seat, 10) === me[6]);
+      btn.classList.toggle('is-on', parseInt(btn.dataset.seat, 10) === me[5]);
     });
     for (const p of snap.pl) {
       if (p[3]) {
@@ -1334,7 +1410,6 @@ function createController(ctx) {
     if (prev) alpha = Math.max(0, Math.min(1, (now - cur.at) / (cur.at - prev.at || TICK_MS * SNAP_EVERY)));
     const prevById = new Map(prev ? prev.snap.u.map((u) => [u[0], u]) : []);
     drawScene(g, world, seats, {
-      mines: cur.snap.m,
       buildings: cur.snap.b,
       players: cur.snap.pl,
       eachUnit: (cb) => {
@@ -1388,7 +1463,7 @@ export default {
 
 /* headless testing hooks — not used by the app itself */
 export const __sim = {
-  buildWorld, makeSim, stepSim, train, build, canPlace, setSend, setTarget, snapshot,
-  supplyCap, supplyUsed,
+  buildWorld, makeSim, stepSim, train, build, canPlace, setMode, setTarget, snapshot,
+  supplyCap, supplyUsed, nearestArm,
   WORKER, GUARD, BLD, CASTLE, MINE, SUPPLY_BASE, SUPPLY_PER_SHACK, START_CANDY, START_WORKERS, TICK_MS,
 };
