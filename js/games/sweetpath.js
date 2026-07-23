@@ -48,6 +48,8 @@ const HOST_HTML = `
       <h2>⚡ Showdown! ⚡</h2>
       <div class="mash-sub" id="duel-sub"></div>
       <div id="duel-countdown">Ready?</div>
+      <canvas id="duel-canvas"></canvas>
+      <div id="duel-race"></div>
       <div class="mash-pads" id="duel-pads"></div>
       <div id="duel-results"></div>
       <button class="start-btn" id="duel-action-btn">Mash!</button>
@@ -179,10 +181,41 @@ function createHost(ctx) {
   // The big screen's current action button, mirrored to the party host's
   // phone so they decide when the adventure starts.
   let pendingHostBtn = null; // { label, fire }
+  let hostBtnFallback = null;
   function sendHostButton(label, fire) {
+    clearTimeout(hostBtnFallback);
     pendingHostBtn = label ? { label, fire } : null;
     const pid = ctx.hostPlayerId && ctx.hostPlayerId();
+    const hostReachable = !!(pid && ctx.players().some((p) => p.id === pid && p.connected));
     if (pid) ctx.sendTo(pid, { type: 'hostBtn', label: label || null });
+    // Nobody holds the crown (or the host phone is offline)? Don't strand
+    // the room — start automatically after a short grace period.
+    if (label && !hostReachable) {
+      hostBtnFallback = setTimeout(() => {
+        if (pendingHostBtn && pendingHostBtn.fire === fire) fire();
+      }, 5000);
+    }
+  }
+
+  // A crown-gated start for the mini-game overlay: big-screen button +
+  // mirrored button on the party host's phone, whichever fires first wins.
+  function armStartGate(label, fire) {
+    const gen = gameGen;
+    const btn = document.getElementById('duel-action-btn');
+    let fired = false;
+    const go = () => {
+      if (fired || gen !== gameGen) return;
+      fired = true;
+      btn.style.display = 'none';
+      btn.onclick = null;
+      sendHostButton(null);
+      fire();
+    };
+    btn.textContent = '\ud83d\udc51 ' + label;
+    btn.style.display = '';
+    btn.onclick = go;
+    updateMgStatus('Waiting for the host to start\u2026');
+    sendHostButton(label, go);
   }
 
   function handlePhoneMsg(pid, msg) {
@@ -211,6 +244,7 @@ function createHost(ctx) {
     if (msg.type === 'doodleProgress') {
       if (groupGame && groupGame.prog.has(slot) && typeof msg.h === 'number') {
         groupGame.prog.set(slot, Math.max(groupGame.prog.get(slot), Math.min(1, msg.h)));
+        renderDoodleRace();
       }
       return;
     }
@@ -1541,11 +1575,122 @@ function showMgOverlay(title, subText, statusText) {
   res.innerHTML = '';
   res.classList.remove('show');
   document.getElementById('duel-action-btn').style.display = 'none';
+  hideBigViews();
   screen.classList.add('show');
   broadcastHostState();
 }
 function updateMgStatus(text) { document.getElementById('duel-countdown').textContent = text; }
-function hideMgOverlay() { document.getElementById('duel-screen').classList.remove('show'); }
+function hideMgOverlay() { hideBigViews(); document.getElementById('duel-screen').classList.remove('show'); }
+
+// --- Big-screen spectator rendering ---
+function bigCanvas(w, h) {
+  const cv = document.getElementById('duel-canvas');
+  cv.width = w; cv.height = h;
+  cv.style.display = 'block';
+  return cv.getContext ? cv.getContext('2d') : null;
+}
+function hideBigViews() {
+  const cv = document.getElementById('duel-canvas');
+  if (cv) cv.style.display = 'none';
+  const race = document.getElementById('duel-race');
+  if (race) { race.style.display = 'none'; race.innerHTML = ''; }
+}
+
+function drawPongBig(c, f, pair) {
+  if (!c) return;
+  const W = 560, H = 336, sx = W / 100, sy = H / 60;
+  c.clearRect(0, 0, W, H);
+  c.strokeStyle = 'rgba(74,37,69,0.18)';
+  c.lineWidth = 3;
+  c.setLineDash([10, 12]);
+  c.beginPath(); c.moveTo(W / 2, 0); c.lineTo(W / 2, H); c.stroke();
+  c.setLineDash([]);
+  const PH = 16 * sy, PW = 14;
+  [0, 1].forEach(i => {
+    c.fillStyle = pair[i].color.hex;
+    const px = i === 0 ? 12 : W - 12 - PW;
+    c.fillRect(px, f.p[i] * sy - PH / 2, PW, PH);
+  });
+  c.fillStyle = '#ff4d6d';
+  c.beginPath(); c.arc(f.b[0] * sx, f.b[1] * sy, 10, 0, Math.PI * 2); c.fill();
+  c.font = 'bold 30px Fredoka, sans-serif';
+  c.textAlign = 'center';
+  c.fillStyle = '#8a5a78';
+  c.fillText(`${f.s[0]}  \u2014  ${f.s[1]}`, W / 2, 38);
+}
+
+function tronBigInit(c, size) {
+  if (!c) return;
+  c.clearRect(0, 0, size, size);
+  c.strokeStyle = 'rgba(74,37,69,0.2)';
+  c.lineWidth = 3;
+  c.strokeRect(1.5, 1.5, size - 3, size - 3);
+}
+function tronBigStep(c, heads, alive, parts, cell) {
+  if (!c) return;
+  heads.forEach((h, i) => {
+    if (h && alive[i]) {
+      c.fillStyle = parts[i].color.hex;
+      c.fillRect(h[0] * cell, h[1] * cell, cell - 0.6, cell - 0.6);
+    }
+  });
+}
+
+function buildDoodleRaceBoard(parts) {
+  const race = document.getElementById('duel-race');
+  race.innerHTML = parts.map(pl => `
+    <div class="race-lane">
+      <div class="race-pct" id="race-pct-${pl.slot}">0%</div>
+      <div class="race-track"><div class="race-fill" id="race-fill-${pl.slot}" style="background:${pl.color.hex}"></div></div>
+      <div class="race-name" style="color:${pl.color.hex}">${escapeHtml(pl.name)}</div>
+    </div>`).join('');
+  race.style.display = 'flex';
+}
+function renderDoodleRace() {
+  if (!groupGame) return;
+  groupGame.parts.forEach(pl => {
+    const v = Math.round((groupGame.prog.get(pl.slot) || 0) * 100);
+    const f = document.getElementById('race-fill-' + pl.slot);
+    const t = document.getElementById('race-pct-' + pl.slot);
+    if (f) f.style.height = v + '%';
+    if (t) t.textContent = v + '%';
+  });
+}
+
+function spinBigWheel(idx, thisGen) {
+  const c = bigCanvas(320, 320);
+  if (!c) return;
+  const S = 320, R = S / 2 - 10, cx = S / 2, cy = S / 2;
+  const labels = WHEEL_SEGMENTS.map(w => w.label);
+  const cols = ['#ff4d6d', '#4dabf7', '#ffd93d', '#6bcf7f', '#b380ff', '#ff9f4a'];
+  const n = labels.length, arc = Math.PI * 2 / n;
+  const draw = (rot) => {
+    c.clearRect(0, 0, S, S);
+    for (let i = 0; i < n; i++) {
+      const a0 = rot + i * arc;
+      c.beginPath(); c.moveTo(cx, cy); c.arc(cx, cy, R, a0, a0 + arc); c.closePath();
+      c.fillStyle = cols[i % cols.length]; c.fill();
+      c.strokeStyle = '#fff'; c.lineWidth = 3; c.stroke();
+      c.save(); c.translate(cx, cy); c.rotate(a0 + arc / 2);
+      c.textAlign = 'right'; c.fillStyle = '#fff';
+      c.font = 'bold 13px Fredoka, sans-serif';
+      c.fillText(labels[i].slice(0, 18), R - 12, 5);
+      c.restore();
+    }
+    c.fillStyle = '#4a2545';
+    c.beginPath(); c.moveTo(cx, 6); c.lineTo(cx - 13, 30); c.lineTo(cx + 13, 30); c.closePath(); c.fill();
+  };
+  const target = -Math.PI / 2 - (idx * arc + arc / 2) + Math.PI * 2 * 5;
+  const t0 = performance.now(), DUR = 4000;
+  const anim = (t) => {
+    if (thisGen !== gameGen) return;
+    const k = Math.min(1, (t - t0) / DUR);
+    const e = 1 - Math.pow(1 - k, 3);
+    draw(target * e);
+    if (k < 1) requestAnimationFrame(anim);
+  };
+  requestAnimationFrame(anim);
+}
 
 function startCollisionMinigame(group, space) {
   bonusDrawPending = false;
@@ -1572,8 +1717,10 @@ function startCollisionMinigame(group, space) {
     const gen = gameGen;
     setTimeout(() => { if (gen === gameGen) { hideMgOverlay(); endTurn(); } }, 2400);
   };
-  if (kind === 'pong') runPong(parts.slice(0, 2), done);
-  else runTron(parts, done);
+  armStartGate(kind === 'pong' ? 'Start the Duel!' : 'Start the Battle!', () => {
+    if (kind === 'pong') runPong(parts.slice(0, 2), done);
+    else runTron(parts, done);
+  });
 }
 
 // --- PONG: big screen simulates, phones render + send paddle position ---
@@ -1587,6 +1734,7 @@ function runPong(pair, done) {
     type: 'mgStart', kind: 'pong', side: i,
     names: pair.map(pp => pp.name), colors: pair.map(pp => pp.color.hex),
   }));
+  const bigC = bigCanvas(560, 336);
   mgInputHandler = (slot, msg) => {
     const i = pair.findIndex(pp => pp.slot === slot);
     if (i > -1 && typeof msg.y === 'number') {
@@ -1623,6 +1771,7 @@ function runPong(pair, done) {
     }
     const frame = { type: 'mgState', b: [+bx.toFixed(1), +by.toFixed(1)], p: [+py[0].toFixed(1), +py[1].toFixed(1)], s: score };
     pair.forEach(pl => safeSend(connsBySlot.get(pl.slot), frame));
+    drawPongBig(bigC, frame, pair);
   }, 33);
   const guard = setTimeout(() => {
     if (gen !== gameGen || sess !== mgSession) return;
@@ -1652,6 +1801,10 @@ function runTron(group, done) {
     heads: heads.map(h => [...h]), dirs: [...dirs],
     names: parts.map(pp => pp.name), colors: parts.map(pp => pp.color.hex),
   }));
+  const bigC = bigCanvas(408, 408);
+  const bigCell = 408 / N;
+  tronBigInit(bigC, 408);
+  tronBigStep(bigC, heads, alive, parts, bigCell);
   mgInputHandler = (slot, msg) => {
     const i = parts.findIndex(pp => pp.slot === slot);
     if (i > -1 && (msg.turn === 'L' || msg.turn === 'R')) pending[i] = msg.turn;
@@ -1687,6 +1840,7 @@ function runTron(group, done) {
     }
     const frame = { type: 'mgState', heads: heads.map((h, i) => alive[i] ? [...h] : null), alive: [...alive] };
     parts.forEach(pl => safeSend(connsBySlot.get(pl.slot), frame));
+    tronBigStep(bigC, heads, alive, parts, bigCell);
     const living = parts.filter((_, i) => alive[i]);
     updateMgStatus(living.length > 1 ? `${living.length} riders left\u2026` : '');
     if (living.length <= 1) finish(living[0] || parts[Math.floor(Math.random() * parts.length)]);
@@ -1720,7 +1874,11 @@ function startGroupMinigame(resume) {
   const gen = gameGen, sess = ++mgSession;
   const seed = (Math.random() * 1e9) | 0;
   const DURATION = 45000;
-  showMgOverlay('🦘 DOODLE DASH!', 'Round complete! Everyone: climb to the finish line on your phones! Winner spins the Wheel of Fortune 🎡', 'Climbing\u2026');
+  showMgOverlay('🦘 DOODLE DASH!', 'Round complete! Everyone: climb to the finish line on your phones! Winner spins the Wheel of Fortune 🎡', '');
+  const begin = () => {
+  if (gen !== gameGen || sess !== mgSession) return;
+  updateMgStatus('Climbing\u2026');
+  buildDoodleRaceBoard(parts);
   const prog = new Map(parts.map(pl => [pl.slot, 0]));
   let ended = false;
   const end = (winner) => {
@@ -1745,6 +1903,7 @@ function startGroupMinigame(resume) {
       const pl = parts.find(pp => pp.slot === lead[0]);
       if (pl) updateMgStatus(`${pl.name} leads \u2014 ${Math.round(lead[1] * 100)}% up!`);
     }
+    renderDoodleRace();
   }, 900);
   const guard = setTimeout(() => {
     if (gen !== gameGen || sess !== mgSession || ended) return;
@@ -1752,6 +1911,8 @@ function startGroupMinigame(resume) {
     parts.forEach(pl => { const h = prog.get(pl.slot) || 0; if (h > bh) { bh = h; best = pl; } });
     end(best);
   }, DURATION + 3000);
+  };
+  armStartGate('Start the Race!', begin);
 }
 
 let wheelPending = null; // { winner, resume }
@@ -1777,6 +1938,7 @@ function doSpin(winner) {
   const c = connsBySlot.get(winner.slot);
   if (c) safeSend(c, { type: 'wheelResult', idx, segments: WHEEL_SEGMENTS.map(w => w.label) });
   updateMgStatus('Spinning\u2026');
+  spinBigWheel(idx, gen);
   setTimeout(() => {
     if (gen !== gameGen) return;
     applyWheel(winner, seg);
@@ -2258,6 +2420,11 @@ function broadcastState() {
       const slot = slotByPid.get(pid);
       const c = slot !== undefined ? connsBySlot.get(slot) : null;
       if (c) c.open = false;
+      if (ctx.hostPlayerId && pid === ctx.hostPlayerId() && pendingHostBtn) {
+        clearTimeout(hostBtnFallback);
+        const pb = pendingHostBtn;
+        hostBtnFallback = setTimeout(() => { if (pendingHostBtn === pb) pb.fire(); }, 6000);
+      }
       broadcastState();
       // If it was their turn, draw for them so the game never stalls.
       const cur = players[currentPlayerIdx];
@@ -2285,6 +2452,7 @@ function broadcastState() {
 
     destroy() {
       gameGen++; contestGen++; mgSession++;
+      clearTimeout(hostBtnFallback);
       mgInputHandler = null; remotePressHandler = null;
       groupGame = null; wheelPending = null;
       if (activeMashKeyHandler) {
@@ -2371,7 +2539,7 @@ function createController(ctx) {
     const { W, H } = mg;
     const sx = W / 100, sy = H / 60;
     mgCtx.clearRect(0, 0, W, H);
-    mgCtx.strokeStyle = 'rgba(255,255,255,0.2)';
+    mgCtx.strokeStyle = 'rgba(74,37,69,0.18)';
     mgCtx.setLineDash([6, 8]);
     mgCtx.beginPath(); mgCtx.moveTo(W / 2, 0); mgCtx.lineTo(W / 2, H); mgCtx.stroke();
     mgCtx.setLineDash([]);
@@ -2381,15 +2549,15 @@ function createController(ctx) {
       const px = i === 0 ? 6 : W - 6 - PW;
       mgCtx.fillRect(px, f.p[i] * sy - PH / 2, PW, PH);
       if (i === mg.side) {
-        mgCtx.strokeStyle = 'white'; mgCtx.lineWidth = 2;
+        mgCtx.strokeStyle = '#4a2545'; mgCtx.lineWidth = 2;
         mgCtx.strokeRect(px - 2, f.p[i] * sy - PH / 2 - 2, PW + 4, PH + 4);
       }
     });
-    mgCtx.fillStyle = 'white';
+    mgCtx.fillStyle = '#ff4d6d';
     mgCtx.beginPath(); mgCtx.arc(f.b[0] * sx, f.b[1] * sy, 6, 0, Math.PI * 2); mgCtx.fill();
     mgCtx.font = 'bold 22px Fredoka, sans-serif';
     mgCtx.textAlign = 'center';
-    mgCtx.fillStyle = 'rgba(255,255,255,0.85)';
+    mgCtx.fillStyle = '#8a5a78';
     mgCtx.fillText(`${f.s[0]}  —  ${f.s[1]}`, W / 2, 26);
   }
 
@@ -2409,7 +2577,7 @@ function createController(ctx) {
     const size = mgCanvas.width, c = mg.cell;
     mgCtx.clearRect(0, 0, size, size);
     mg.trails.forEach((tr, i) => {
-      mgCtx.fillStyle = mg.alive[i] ? mg.colors[i] : 'rgba(120,120,120,0.5)';
+      mgCtx.fillStyle = mg.alive[i] ? mg.colors[i] : 'rgba(180,160,175,0.5)';
       tr.forEach(([x, y]) => mgCtx.fillRect(x * c, y * c, c - 0.5, c - 0.5));
       const head = tr[tr.length - 1];
       if (head && mg.alive[i]) {
@@ -2417,7 +2585,7 @@ function createController(ctx) {
         mgCtx.fillRect(head[0] * c + c * 0.25, head[1] * c + c * 0.25, c * 0.5, c * 0.5);
       }
     });
-    mgCtx.strokeStyle = 'rgba(255,255,255,0.25)';
+    mgCtx.strokeStyle = 'rgba(74,37,69,0.2)';
     mgCtx.lineWidth = 2;
     mgCtx.strokeRect(0, 0, size, size);
   }
@@ -2556,7 +2724,7 @@ function createController(ctx) {
       if (fy > -20 && fy < H + 20) {
         mgCtx.fillStyle = '#ffd93d';
         for (let x = 0; x < W; x += 20) mgCtx.fillRect(x, fy, 10, 6);
-        mgCtx.font = 'bold 14px Fredoka'; mgCtx.fillStyle = '#ffd93d';
+        mgCtx.font = 'bold 14px Fredoka'; mgCtx.fillStyle = '#ff9f4a';
         mgCtx.textAlign = 'center';
         mgCtx.fillText('FINISH', W / 2, fy - 8);
       }
@@ -2577,7 +2745,7 @@ function createController(ctx) {
       mgCtx.beginPath(); mgCtx.arc(mg.x - 4, jy - 13, 2.4, 0, Math.PI * 2);
       mgCtx.arc(mg.x + 4, jy - 13, 2.4, 0, Math.PI * 2); mgCtx.fill();
       // progress
-      mgCtx.fillStyle = 'rgba(255,255,255,0.8)';
+      mgCtx.fillStyle = 'rgba(74,37,69,0.75)';
       mgCtx.font = 'bold 15px Fredoka'; mgCtx.textAlign = 'left';
       mgCtx.fillText(Math.round(Math.min(1, mg.maxY / mg.FINISH) * 100) + '%', 10, 22);
     }
