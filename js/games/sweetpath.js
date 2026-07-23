@@ -1678,7 +1678,7 @@ function spinBigWheel(idx, thisGen) {
       c.restore();
     }
     c.fillStyle = '#4a2545';
-    c.beginPath(); c.moveTo(cx, 6); c.lineTo(cx - 13, 30); c.lineTo(cx + 13, 30); c.closePath(); c.fill();
+    c.beginPath(); c.moveTo(cx - 13, 6); c.lineTo(cx + 13, 6); c.lineTo(cx, 32); c.closePath(); c.fill();
   };
   const target = -Math.PI / 2 - (idx * arc + arc / 2) + Math.PI * 2 * 5;
   const t0 = performance.now(), DUR = 4000;
@@ -2535,7 +2535,7 @@ function createController(ctx) {
     mgScreen.addEventListener('pointerdown', mg.onPointer);
   }
   function drawPong(f) {
-    if (!mg || mg.kind !== 'pong') return;
+    if (!mg || mg.kind !== 'pong' || !mgCtx) return;
     const { W, H } = mg;
     const sx = W / 100, sy = H / 60;
     mgCtx.clearRect(0, 0, W, H);
@@ -2573,7 +2573,7 @@ function createController(ctx) {
     drawTron();
   }
   function drawTron() {
-    if (!mg || mg.kind !== 'tron') return;
+    if (!mg || mg.kind !== 'tron' || !mgCtx) return;
     const size = mgCanvas.width, c = mg.cell;
     mgCtx.clearRect(0, 0, size, size);
     mg.trails.forEach((tr, i) => {
@@ -2663,11 +2663,18 @@ function createController(ctx) {
     for (let y = 60; y < FINISH + 100; y += 55 + rng() * 40) {
       plats.push({ x: rng() * (W - 62), y, w: 62 });
     }
+    const CANDY = ['#ff7ab8', '#4dabf7', '#ffd93d', '#6bcf7f', '#b380ff', '#ff9f4a'];
+    plats.forEach((pl, i) => { pl.c = CANDY[i % CANDY.length]; });
+    const deco = [];
+    for (let y = 0; y < FINISH + 300; y += 90 + rng() * 120) {
+      deco.push({ x: rng() * W, y, r: 2 + rng() * 3, c: CANDY[Math.floor(rng() * CANDY.length)] });
+    }
     mg = {
       kind: 'doodle', W, H, plats, FINISH, color: msg.color,
       x: W / 2, y: 0, vy: 10, vx: 0, maxY: 0, hold: 0, doneLocal: false,
       lastReport: 0, raf: null, ended: false,
       tilt: null, onTilt: null, goBtn: null,
+      deco, sky: null,
     };
     mg.onDown = (e) => { e.preventDefault(); const r = mgCanvas.getBoundingClientRect(); mg.hold = (e.clientX - r.left) < r.width / 2 ? -1 : 1; };
     mg.onUp = (e) => { e.preventDefault(); mg.hold = 0; };
@@ -2716,24 +2723,48 @@ function createController(ctx) {
       mg.raf = requestAnimationFrame(step);
     }
     function drawDoodle() {
+      if (!mgCtx) return;
       const cam = Math.max(0, mg.maxY - H * 0.55);
       const toScreen = (wy) => H - (wy - cam) - 40;
-      mgCtx.clearRect(0, 0, W, H);
+      if (!mg.sky) {
+        mg.sky = mgCtx.createLinearGradient(0, 0, 0, H);
+        mg.sky.addColorStop(0, '#dceeff');
+        mg.sky.addColorStop(0.55, '#ffe4f1');
+        mg.sky.addColorStop(1, '#fff4d6');
+      }
+      mgCtx.fillStyle = mg.sky;
+      mgCtx.fillRect(0, 0, W, H);
+      // floating candy sprinkles drifting past as you climb
+      for (const d of mg.deco) {
+        const dy = toScreen(d.y);
+        if (dy > -8 && dy < H + 8) {
+          mgCtx.globalAlpha = 0.4;
+          mgCtx.fillStyle = d.c;
+          mgCtx.beginPath(); mgCtx.arc(d.x, dy, d.r, 0, Math.PI * 2); mgCtx.fill();
+          mgCtx.globalAlpha = 1;
+        }
+      }
       // finish line
       const fy = toScreen(mg.FINISH);
       if (fy > -20 && fy < H + 20) {
-        mgCtx.fillStyle = '#ffd93d';
-        for (let x = 0; x < W; x += 20) mgCtx.fillRect(x, fy, 10, 6);
+        for (let x = 0, i = 0; x < W; x += 14, i++) {
+          mgCtx.fillStyle = i % 2 ? '#ffffff' : '#ff4d6d';
+          mgCtx.fillRect(x, fy, 14, 7);
+        }
         mgCtx.font = 'bold 14px Fredoka'; mgCtx.fillStyle = '#ff9f4a';
         mgCtx.textAlign = 'center';
         mgCtx.fillText('FINISH', W / 2, fy - 8);
       }
-      mgCtx.fillStyle = '#6bcf7f';
       for (const pl of mg.plats) {
         const sy = toScreen(pl.y);
         if (sy > -10 && sy < H + 10) {
+          mgCtx.fillStyle = pl.c || '#6bcf7f';
           mgCtx.beginPath();
           mgCtx.roundRect(pl.x, sy, pl.w, 10, 5);
+          mgCtx.fill();
+          mgCtx.fillStyle = 'rgba(255,255,255,0.75)';
+          mgCtx.beginPath();
+          mgCtx.roundRect(pl.x + 2, sy + 1.5, pl.w - 4, 3.5, 2);
           mgCtx.fill();
         }
       }
@@ -2788,6 +2819,7 @@ function createController(ctx) {
   const wheelResult = document.getElementById('wheel-result');
   let wheelSegs = [];
   function drawWheel(angle) {
+    if (!wheelCtx) return;
     const cx = 150, cy = 150, r = 140, n = wheelSegs.length;
     const cols = ['#ff4d6d', '#4dabf7', '#ffd93d', '#b380ff', '#6bcf7f', '#ff9f4a'];
     wheelCtx.clearRect(0, 0, 300, 300);
