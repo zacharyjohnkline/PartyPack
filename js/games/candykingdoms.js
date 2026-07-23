@@ -1703,6 +1703,7 @@ function createController(ctx) {
   let selWorkerBld = null;
   let selGuardBld = null;
   let heroSig = '';
+  let ro = null;
 
   function start() {
     ctx.root.innerHTML = CTRL_HTML;
@@ -1710,6 +1711,11 @@ function createController(ctx) {
     g = canvas.getContext('2d');
     bindPanel();
     bindTouch();
+    /* keep the pixel buffer matched to the box — tab switches change its height */
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => sizeCanvas());
+      ro.observe(ctx.root.querySelector('.ck-ctrl-map'));
+    }
     ctx.send({ k: 'need-init' });
     syncTimer = setInterval(() => { if (!world) ctx.send({ k: 'need-init' }); }, 2000);
     raf = requestAnimationFrame(render);
@@ -1751,6 +1757,19 @@ function createController(ctx) {
 
   function bindPanel() {
     const r = ctx.root;
+    /* tablets: a quick second tap must train another unit, not zoom the page */
+    const panel = r.querySelector('.ck-panel');
+    let lastTap = 0;
+    panel.addEventListener('touchend', (e) => {
+      const now = performance.now();
+      if (now - lastTap < 350) {
+        e.preventDefault();                      // stops the browser's double-tap zoom
+        const btn = e.target.closest('button');
+        if (btn && !btn.disabled) btn.click();   // …but the tap still counts
+      }
+      lastTap = now;
+    }, { passive: false });
+    r.addEventListener('dblclick', (e) => e.preventDefault());
     r.querySelectorAll('.ck-train:not(.ck-enlist)').forEach((btn) => {
       btn.addEventListener('click', () => {
         const bld = btn.dataset.unit === 'worker' ? selWorkerBld : selGuardBld;
@@ -1936,8 +1955,12 @@ function createController(ctx) {
 
   function sizeCanvas() {
     const box = ctx.root.querySelector('.ck-ctrl-map');
-    canvas.width = box.clientWidth * devicePixelRatio;
-    canvas.height = box.clientHeight * devicePixelRatio;
+    if (!box || !box.clientWidth || !box.clientHeight) return;
+    const w = Math.round(box.clientWidth * devicePixelRatio);
+    const h = Math.round(box.clientHeight * devicePixelRatio);
+    if (canvas.width === w && canvas.height === h) return;
+    canvas.width = w;
+    canvas.height = h;
     if (world) {
       const zFit = fitZoom(canvas.width, canvas.height);
       cam.z = Math.max(cam.z, zFit);
@@ -1947,8 +1970,12 @@ function createController(ctx) {
 
   function screenToWorld(clientX, clientY) {
     const rect = canvas.getBoundingClientRect();
-    const px = (clientX - rect.left) * devicePixelRatio;
-    const py = (clientY - rect.top) * devicePixelRatio;
+    /* scale from the canvas's real on-screen size, so taps stay true even
+       mid-layout-change */
+    const sx = rect.width ? canvas.width / rect.width : devicePixelRatio;
+    const sy = rect.height ? canvas.height / rect.height : devicePixelRatio;
+    const px = (clientX - rect.left) * sx;
+    const py = (clientY - rect.top) * sy;
     return {
       x: (px - canvas.width / 2) / cam.z + cam.x,
       y: (py - canvas.height / 2) / cam.z + cam.y,
@@ -2058,6 +2085,7 @@ function createController(ctx) {
   function render(now) {
     raf = requestAnimationFrame(render);
     if (!g || !world || !cur) return;
+    sizeCanvas();   // no-op unless the box changed; keeps circles round everywhere
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.clearRect(0, 0, canvas.width, canvas.height);
     g.translate(canvas.width / 2, canvas.height / 2);
@@ -2122,6 +2150,7 @@ function createController(ctx) {
   function destroy() {
     cancelAnimationFrame(raf);
     clearInterval(syncTimer);
+    if (ro) ro.disconnect();
     ctx.root.innerHTML = '';
   }
 

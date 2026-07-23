@@ -88,9 +88,10 @@
 
 /* ---------- controller (phone) ---------- */
 
-.ck-ctrl { position: relative; display: flex; flex-direction: column; height: 100%; width: 100%; overflow: hidden; }
+.ck-ctrl { position: relative; display: flex; flex-direction: column; height: 100%; width: 100%; overflow: hidden; touch-action: manipulation; }
+.ck-ctrl button { touch-action: manipulation; }
 
-.ck-ctrl-map { position: relative; flex: 1; min-height: 200px; border-bottom: 3px solid rgba(255, 179, 217, 0.6); }
+.ck-ctrl-map { position: relative; flex: 1; min-height: 200px; border-bottom: 3px solid rgba(255, 179, 217, 0.6); overflow: hidden; }
 .ck-ctrl-canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
 .ck-ctrl-maphint {
   position: absolute; bottom: 6px; left: 50%;
@@ -227,8 +228,10 @@
   border-radius: 999px;
   padding: 6px 12px;
   font-size: 13px; font-weight: 600; color: var(--c-text);
-  white-space: nowrap;
-  display: flex; align-items: center; gap: 8px;
+  max-width: calc(100% - 12px);
+  box-sizing: border-box;
+  text-align: center;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px;
 }
 .ck-place-hint.hidden { display: none; }
 .ck-place-cancel {
@@ -328,3 +331,7 @@
 }
 
 .ck-banner-crown { font-size: .95rem; }
+
+/* rapid taps on tablets: no zoom, no text-selection loupe */
+.ck-ctrl, .ck-ctrl * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.ck-panel, .ck-panel * { touch-action: manipulation; }
