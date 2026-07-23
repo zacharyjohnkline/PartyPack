@@ -889,6 +889,32 @@
 }
 #sp-bonus.show { display: block; animation: sp-bonus-pop 0.35s ease; }
 @keyframes sp-bonus-pop { from { transform: scale(0.6); } to { transform: scale(1); } }
+#sp-hostbtn {
+  display: none;
+  max-width: 340px;
+  background: linear-gradient(135deg, #ffc93d, #ff9f4a);
+  color: #6b4300;
+  box-shadow: 0 5px 0 #c77e1f, 0 9px 18px rgba(255, 170, 40, 0.4);
+  animation: sp-bonus-pop 0.35s ease;
+}
+#sp-hostbtn.show { display: block; }
+
+#sp-doodle-go {
+  position: absolute;
+  left: 50%; top: 55%;
+  transform: translate(-50%, -50%);
+  z-index: 10;
+  border: none;
+  border-radius: 22px;
+  padding: 20px 26px;
+  font-family: 'Fredoka', sans-serif;
+  font-size: 20px; font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, #6bcf7f, #2f9e44);
+  box-shadow: 0 6px 0 #247a34, 0 12px 26px rgba(0,0,0,0.45);
+}
+#sp-doodle-go:active { transform: translate(-50%, calc(-50% + 4px)); box-shadow: 0 2px 0 #247a34; }
+
 #sp-winctl { display: none; flex-direction: column; gap: 10px; width: 100%; max-width: 340px; margin-top: 8px; }
 #sp-winctl.show { display: flex; }
 #sp-again { background: linear-gradient(135deg, var(--c-green), #2f9e44); box-shadow: 0 5px 0 #247a34, 0 9px 18px rgba(107,207,127,0.35); }
