@@ -40,14 +40,22 @@ const BLD = {
 };
 const TYPE_IDX = ['castle', 'bakery', 'shack', 'camp', 'tower'];
 
-const SUPPLY_BASE = 6, SUPPLY_PER_SHACK = 4, SUPPLY_MAX = 30;
+/* supply: the base barely covers your starting helpers — armies are
+   built on Sugar Shacks (candy AND territory sacrificed for troops) */
+const SUPPLY_BASE = 6, SUPPLY_PER_SHACK = 8, SUPPLY_MAX = 60;
 const START_CANDY = 150, START_WORKERS = 3;
 
-/* mines never run out — but the farther out, the sweeter the haul */
-const MINE = { r: 34, yield: { starter: 10, lane: 14, rim: 20 } };
-const HARVEST_LEASH = 270;    // a mine works only near one of your drop-offs
-const BUILD_LEASH = 240;      // build near your buildings or troops…
+/* mines never run out — but only a few helpers fit at once, so
+   colonizing more mines is the only way to speed up the economy */
+const MINE = { r: 34, yield: { starter: 10, lane: 14, rim: 20 }, slots: 5 };
+const HARVEST_LEASH = 270;    // a mine works only near its home drop-off
+const CAMP_AURA = 300;        // finished camps project buildable territory
+const BUILD_LEASH = 240;      // camps (only) can be founded near your troops
 const QUEUE_MAX = 5;
+
+/* towers are corridor weapons: your plot, the lanes, or the arena rim */
+const TOWER_RING_IN = ARENA_R + 46, TOWER_RING_OUT = ARENA_R + 210;
+const LANE_CORRIDOR = 70;     // half-width of the buildable lane strip
 
 const SEP_R = 20;
 
@@ -93,7 +101,7 @@ function makeSim(n) {
     const b = world.arms[i].base;
     buildings.push({ id: 'c' + i, seat: i, type: 'castle', x: b.x, y: b.y, hp: CASTLE.hp, maxHp: CASTLE.hp, prog: 1, queue: [] });
     for (let w = 0; w < START_WORKERS; w++) {
-      units.push(newUnit(uid++, i, 'worker', b.x + (Math.random() - 0.5) * 90, b.y + (Math.random() - 0.5) * 90));
+      units.push(newUnit(uid++, i, 'worker', b.x + (Math.random() - 0.5) * 90, b.y + (Math.random() - 0.5) * 90, 'c' + i));
     }
   }
   return {
@@ -103,12 +111,13 @@ function makeSim(n) {
   };
 }
 
-function newUnit(id, seat, kind, x, y) {
+function newUnit(id, seat, kind, x, y, home) {
   const def = kind === 'worker' ? WORKER : GUARD;
   return {
     id, seat, kind, x, y, px: x, py: y, hp: def.hp,
     st: kind === 'worker' ? 'idle' : 'muster',
     path: null, pi: 0, cd: 0, carry: 0, mineIdx: -1, mt: 0,
+    home: home || null, rx: 0, ry: 0,
   };
 }
 
@@ -124,18 +133,19 @@ function supplyUsed(sim, seat) {
   return n;
 }
 
-/* queue a unit at the right building (castle→worker, bakery→guard) */
-function train(sim, seat, kind) {
+/* queue a unit — workers at a castle or camp, guards at a bakery.
+   `bldId` (optional) picks the exact building; otherwise best queue wins. */
+function train(sim, seat, kind, bldId) {
   const p = sim.players[seat];
   if (!p || p.elim || sim.over) return false;
   const def = kind === 'worker' ? WORKER : kind === 'guard' ? GUARD : null;
   if (!def) return false;
-  const btype = kind === 'worker' ? 'castle' : 'bakery';
+  const okTypes = kind === 'worker' ? ['castle', 'camp'] : ['bakery'];
   let best = null;
   for (const b of sim.buildings) {
-    if (b.seat === seat && b.type === btype && b.prog >= 1 && b.queue.length < QUEUE_MAX) {
-      if (!best || b.queue.length < best.queue.length) best = b;
-    }
+    if (b.seat !== seat || !okTypes.includes(b.type) || b.prog < 1 || b.queue.length >= QUEUE_MAX) continue;
+    if (bldId) { if (b.id === bldId) { best = b; break; } continue; }
+    if (!best || b.queue.length < best.queue.length) best = b;
   }
   if (!best) return false;
   if (p.candy < def.cost) return false;
@@ -145,8 +155,31 @@ function train(sim, seat, kind) {
   return true;
 }
 
+function distToSeg(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
+}
+
+/* towers are corridor weapons: your home plot, any lane strip, or the arena rim */
+function inTowerZone(world, seat, x, y) {
+  const home = world.arms[seat];
+  if (home && dist(x, y, home.base.x, home.base.y) <= PLOT_R) return true;
+  const r = Math.hypot(x, y);
+  if (r >= TOWER_RING_IN && r <= TOWER_RING_OUT) return true;
+  for (const arm of world.arms) {
+    const a = arm.lane[0], b = arm.lane[arm.lane.length - 1];
+    if (distToSeg(x, y, a.x, a.y, b.x, b.y) <= LANE_CORRIDOR) return true;
+  }
+  return false;
+}
+
 /* placement rules — shared with the phone so the ghost can go green/red.
-   Plain-array signature keeps it usable client-side from snapshots. */
+   Territory = your plot, or the aura of a FINISHED friendly Candy Camp.
+   Camps alone may also be founded near your troops (the beachhead rule).
+   `buildings` entries need {seat, type, x, y, prog}. */
 function canPlace(world, buildings, units, seat, type, x, y) {
   const def = BLD[type];
   if (!def) return false;
@@ -159,14 +192,17 @@ function canPlace(world, buildings, units, seat, type, x, y) {
   for (const m of world.mines) {
     if (dist(x, y, m.x, m.y) < def.r + MINE.r + 10) return false; // don't squish the candy
   }
-  /* territory: your plot, or near anything of yours (build where your troops have gone) */
+  if (type === 'tower' && !inTowerZone(world, seat, x, y)) return false;
+
   const home = world.arms[seat] ? world.arms[seat].base : null;
   if (home && dist(x, y, home.x, home.y) <= PLOT_R) return true;
   for (const b of buildings) {
-    if (b.seat === seat && dist(x, y, b.x, b.y) <= BUILD_LEASH) return true;
+    if (b.seat === seat && b.type === 'camp' && b.prog >= 1 && dist(x, y, b.x, b.y) <= CAMP_AURA) return true;
   }
-  for (const u of units) {
-    if (u.seat === seat && dist(x, y, u.x, u.y) <= BUILD_LEASH) return true;
+  if (type === 'camp') {
+    for (const u of units) {
+      if (u.seat === seat && dist(x, y, u.x, u.y) <= BUILD_LEASH) return true;
+    }
   }
   return false;
 }
@@ -279,21 +315,46 @@ function nearestDropoff(sim, seat, x, y) {
   }
   return best;
 }
-/* a mine is workable if it sits near one of your drop-offs; helpers
-   prefer the sweetest reachable mine, nearest as a tie-break */
-function pickMine(sim, seat, x, y) {
-  let best = -1, bestY = -1, bestD = Infinity;
-  const drops = dropoffs(sim, seat);
+/* Gather: drop a rally flag — every guard disengages and runs to it,
+   then digs in. Doubles as the retreat button. */
+function gather(sim, seat, x, y) {
+  const p = sim.players[seat];
+  if (!p || p.elim || sim.over) return false;
+  if (!isFinite(x) || !isFinite(y) || Math.hypot(x, y) > WORLD_R) return false;
+  p.mode = 'stop';
+  sim.fx.push({ t: 'flag', x, y });
+  for (const u of sim.units) {
+    if (u.seat === seat && u.kind === 'guard' && u.hp > 0) {
+      u.st = 'rally'; u.path = null; u.rx = x; u.ry = y;
+    }
+  }
+  return true;
+}
+
+function minersAt(sim, mineIdx) {
+  let n = 0;
+  for (const u of sim.units) if (u.st === 'mining' && u.mineIdx === mineIdx) n++;
+  return n;
+}
+
+/* helpers work the mines near their OWN home building — nearest first,
+   skipping mines that already have a full digging crew */
+function pickMineForHome(sim, homeBld) {
+  const cands = [];
   for (let i = 0; i < sim.world.mines.length; i++) {
     const m = sim.world.mines[i];
-    let leashed = false;
-    for (const b of drops) if (dist(m.x, m.y, b.x, b.y) <= HARVEST_LEASH) { leashed = true; break; }
-    if (!leashed) continue;
-    const y2 = MINE.yield[m.kind];
-    const d = dist(x, y, m.x, m.y);
-    if (y2 > bestY || (y2 === bestY && d < bestD)) { bestY = y2; bestD = d; best = i; }
+    const d = dist(homeBld.x, homeBld.y, m.x, m.y);
+    if (d <= HARVEST_LEASH) cands.push({ i, d });
   }
-  return best;
+  if (!cands.length) return -1;
+  cands.sort((a, b) => a.d - b.d);
+  for (const c of cands) if (minersAt(sim, c.i) < MINE.slots) return c.i;
+  return cands[0].i;   // all crews full — join the nearest line
+}
+
+function findBuilding(sim, id) {
+  for (const b of sim.buildings) if (b.id === id) return b;
+  return null;
 }
 
 function moveToward(u, tx, ty, speed) {
@@ -363,12 +424,12 @@ function stepSim(sim) {
       if (job.t <= 0) {
         b.queue.shift();
         const jx = (Math.random() - 0.5) * 60, jy = (Math.random() - 0.5) * 60;
-        sim.units.push(newUnit(sim.nextUid++, b.seat, job.kind, b.x + jx, b.y + jy + bldRadius(b) * 0.6));
+        sim.units.push(newUnit(sim.nextUid++, b.seat, job.kind, b.x + jx, b.y + jy + bldRadius(b) * 0.6, b.id));
         sim.fx.push({ t: 'spawn', x: b.x + jx, y: b.y + jy });
       }
     }
-    /* frosting towers splat intruders */
-    if (b.type === 'tower') {
+    /* frosting towers splat intruders — and duel enemy buildings in range */
+    if (b.type === 'tower' && b.prog >= 1) {
       b.cd = Math.max(0, (b.cd || 0) - 1);
       if (b.cd === 0) {
         let tgt = null, tgtD = BLD.tower.range;
@@ -383,6 +444,19 @@ function stepSim(sim) {
           sim.fx.push({ t: 'zap', x: b.x, y: b.y, x2: tgt.x, y2: tgt.y });
           sim.fx.push({ t: 'hit', x: tgt.x, y: tgt.y });
           if (tgt.hp <= 0) sim.fx.push({ t: 'poof', x: tgt.x, y: tgt.y });
+        } else {
+          let bt = null, btD = BLD.tower.range;
+          for (const e of sim.buildings) {
+            if (e.seat === b.seat || e.hp <= 0) continue;
+            const d = dist(b.x, b.y, e.x, e.y) - bldRadius(e);
+            if (d < btD) { btD = d; bt = e; }
+          }
+          if (bt) {
+            damageBuilding(sim, bt, BLD.tower.dmg, b.seat);
+            b.cd = BLD.tower.cd;
+            sim.fx.push({ t: 'zap', x: b.x, y: b.y, x2: bt.x, y2: bt.y });
+            sim.fx.push({ t: 'hit', x: bt.x, y: bt.y });
+          }
         }
       }
     }
@@ -408,25 +482,34 @@ function stepSim(sim) {
     u.px = u.x; u.py = u.y;
     if (u.cd > 0) u.cd--;
 
-    /* ---- Gummy Helpers: harvest, carry, and run from trouble ---- */
+    /* ---- Gummy Helpers: loyal to their home building ---- */
     if (u.kind === 'worker') {
+      let home = u.home ? findBuilding(sim, u.home) : null;
+      if (!home || home.seat !== u.seat || home.prog < 1 || (home.type !== 'castle' && home.type !== 'camp')) {
+        home = nearestDropoff(sim, u.seat, u.x, u.y);      // orphaned — adopt the nearest
+        u.home = home ? home.id : null;
+        if (!home) continue;
+      }
       const scary = nearestEnemy(sim, u, WORKER.fleeR);
       if (scary && scary.unit) {
-        const safe = nearestDropoff(sim, u.seat, u.x, u.y);
-        if (safe) { moveToward(u, safe.x, safe.y, WORKER.speed * 1.25); continue; }
+        moveToward(u, home.x, home.y, WORKER.speed * 1.25);
+        continue;
       }
       if (u.st === 'idle') {
-        const mi = pickMine(sim, u.seat, u.x, u.y);
+        const mi = pickMineForHome(sim, home);
         if (mi >= 0) { u.mineIdx = mi; u.st = 'toMine'; }
-        else {
-          const home = nearestDropoff(sim, u.seat, u.x, u.y);
-          if (home && dist(u.x, u.y, home.x, home.y) > 140) moveToward(u, home.x, home.y, WORKER.speed);
-        }
+        else if (dist(u.x, u.y, home.x, home.y) > 140) moveToward(u, home.x, home.y, WORKER.speed);
       } else if (u.st === 'toMine') {
         if (u.mineIdx < 0) { u.st = 'idle'; continue; }
         const m = world.mines[u.mineIdx];
         moveToward(u, m.x, m.y, WORKER.speed);
-        if (dist(u.x, u.y, m.x, m.y) <= MINE.r + 16) { u.st = 'mining'; u.mt = WORKER.mineTicks; }
+        if (dist(u.x, u.y, m.x, m.y) <= MINE.r + 16) {
+          u.st = minersAt(sim, u.mineIdx) < MINE.slots ? 'mining' : 'lineup';
+          if (u.st === 'mining') u.mt = WORKER.mineTicks;
+        }
+      } else if (u.st === 'lineup') {
+        /* the digging crew is full — wait for a shovel */
+        if (minersAt(sim, u.mineIdx) < MINE.slots) { u.st = 'mining'; u.mt = WORKER.mineTicks; }
       } else if (u.st === 'mining') {
         u.mt--;
         if (u.mt <= 0) {
@@ -435,10 +518,8 @@ function stepSim(sim) {
           else u.st = 'idle';
         }
       } else if (u.st === 'toDrop') {
-        const drop = nearestDropoff(sim, u.seat, u.x, u.y);
-        if (!drop) { u.st = 'idle'; continue; }
-        moveToward(u, drop.x, drop.y, WORKER.speed);
-        if (dist(u.x, u.y, drop.x, drop.y) <= bldRadius(drop) + 14) {
+        moveToward(u, home.x, home.y, WORKER.speed);
+        if (dist(u.x, u.y, home.x, home.y) <= bldRadius(home) + 14) {
           sim.players[u.seat].candy += u.carry;
           u.carry = 0; u.st = 'idle';
         }
@@ -447,6 +528,11 @@ function stepSim(sim) {
     }
 
     /* ---- Gingerbread Guards ---- */
+    if (u.st === 'rally') {
+      /* running to the flag — no stopping for fights (this is the retreat) */
+      if (dist(u.x, u.y, u.rx, u.ry) > 55) { moveToward(u, u.rx, u.ry, GUARD.speed); continue; }
+      u.st = 'stand';
+    }
     const foe = nearestEnemy(sim, u, GUARD.aggro * (u.st === 'hold' ? 1.6 : 1));
     if (foe) {
       if (foe.unit) {
@@ -798,13 +884,23 @@ function drawWorker(g, x, y, color, hp, carrying, wobble) {
   g.restore();
 }
 
+function fxLife(t) { return t === 'flag' ? 2.6 : 0.9; }
+
 function drawFx(g, fx, now) {
   for (const f of fx) {
+    const life = fxLife(f.t);
     const age = (now - f.t0) / 1000;
-    if (age > 0.9) continue;
-    const k = age / 0.9;
+    if (age > life) continue;
+    const k = age / life;
     g.save(); g.translate(f.x, f.y); g.globalAlpha = 1 - k;
-    if (f.t === 'poof') {
+    if (f.t === 'flag') {
+      g.globalAlpha = k < 0.8 ? 1 : (1 - k) * 5;
+      g.font = '36px sans-serif'; g.textAlign = 'center';
+      g.fillText('🚩', 0, Math.sin(now * 0.006) * 3);
+      g.strokeStyle = '#ffd93d'; g.lineWidth = 3; g.setLineDash([8, 8]);
+      g.beginPath(); g.arc(0, 6, 30 + Math.sin(now * 0.004) * 4, 0, Math.PI * 2); g.stroke();
+      g.setLineDash([]);
+    } else if (f.t === 'poof') {
       g.strokeStyle = '#fff'; g.lineWidth = 4;
       g.beginPath(); g.arc(0, 0, 8 + k * 34, 0, Math.PI * 2); g.stroke();
       g.font = '18px sans-serif'; g.textAlign = 'center';
@@ -979,7 +1075,10 @@ function createHost(ctx) {
     if (!sim || !data) return;
     const seat = seatByPlayer.get(playerId);
     if (seat === undefined) return;
-    if (data.k === 'train') train(sim, seat, data.unit === 'worker' ? 'worker' : 'guard');
+    if (data.k === 'train') train(sim, seat, data.unit === 'worker' ? 'worker' : 'guard', typeof data.bld === 'string' ? data.bld : undefined);
+    else if (data.k === 'gather') {
+      if (typeof data.x === 'number' && typeof data.y === 'number') gather(sim, seat, data.x, data.y);
+    }
     else if (data.k === 'build') {
       if (typeof data.x === 'number' && typeof data.y === 'number' && BLD[data.type]) {
         build(sim, seat, data.type, data.x, data.y);
@@ -1064,7 +1163,7 @@ function createHost(ctx) {
         }
       },
     }, now);
-    fxLive = fxLive.filter((f) => now - f.t0 < 950);
+    fxLive = fxLive.filter((f) => now - f.t0 < fxLife(f.t) * 1000 + 60);
     drawFx(g, fxLive, now);
   }
 
@@ -1104,6 +1203,7 @@ const CTRL_HTML = `
     <div class="ck-tabpage" data-page="attack">
       <div class="ck-warbtns">
         <button class="ck-warbtn ck-warbtn-send">🚩 SEND!</button>
+        <button class="ck-warbtn ck-warbtn-gather">📣 GATHER</button>
         <button class="ck-warbtn ck-warbtn-stop">✋ STOP</button>
       </div>
       <div class="ck-target-row"></div>
@@ -1141,8 +1241,10 @@ function createController(ctx) {
   let me = null;
   let syncTimer = null;
   let touch = null;
-  let placing = null;              // building type while in placement mode
+  let placing = null;              // building type, or '__rally', while tap-to-place is armed
   let ghost = null;                // {x, y} world coords of the ghost
+  let selWorkerBld = null;         // chosen castle/camp for helpers
+  let selGuardBld = null;          // chosen bakery for guards
 
   function start() {
     ctx.root.innerHTML = CTRL_HTML;
@@ -1193,7 +1295,10 @@ function createController(ctx) {
   function bindPanel() {
     const r = ctx.root;
     r.querySelectorAll('.ck-train').forEach((btn) => {
-      btn.addEventListener('click', () => ctx.send({ k: 'train', unit: btn.dataset.unit }));
+      btn.addEventListener('click', () => {
+        const bld = btn.dataset.unit === 'worker' ? selWorkerBld : selGuardBld;
+        ctx.send({ k: 'train', unit: btn.dataset.unit, bld: bld || undefined });
+      });
     });
     r.querySelectorAll('.ck-build').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -1209,22 +1314,29 @@ function createController(ctx) {
           pg.classList.toggle('hidden', pg.dataset.page !== tab.dataset.tab);
         });
         if (tab.dataset.tab !== 'build') stopPlacing();
+        else if (placing === '__rally') stopPlacing();
       });
     });
     r.querySelector('.ck-warbtn-send').addEventListener('click', () => ctx.send({ k: 'mode', mode: 'send' }));
     r.querySelector('.ck-warbtn-stop').addEventListener('click', () => ctx.send({ k: 'mode', mode: 'stop' }));
+    r.querySelector('.ck-warbtn-gather').addEventListener('click', () => {
+      if (placing === '__rally') stopPlacing();
+      else startPlacing('__rally');
+    });
   }
 
   function startPlacing(type) {
     placing = type; ghost = null;
     const r = ctx.root;
     r.querySelectorAll('.ck-build').forEach((b) => b.classList.toggle('is-on', b.dataset.type === type));
-    r.querySelector('.ck-place-what').textContent = BLD[type].label;
+    r.querySelector('.ck-warbtn-gather').classList.toggle('is-arming', type === '__rally');
+    r.querySelector('.ck-place-what').textContent = type === '__rally' ? 'your rally flag 🚩' : BLD[type].label;
     r.querySelector('.ck-place-hint').classList.remove('hidden');
   }
   function stopPlacing() {
     placing = null; ghost = null;
     ctx.root.querySelectorAll('.ck-build').forEach((b) => b.classList.remove('is-on'));
+    ctx.root.querySelector('.ck-warbtn-gather').classList.remove('is-arming');
     ctx.root.querySelector('.ck-place-hint').classList.add('hidden');
   }
 
@@ -1251,10 +1363,18 @@ function createController(ctx) {
     r.querySelector('.ck-army-n').textContent = me[8];
 
     const myBld = snap.b.filter((b) => b[1] === mySeat);
+    if (selWorkerBld && !myBld.some((b) => b[0] === selWorkerBld)) selWorkerBld = null;
+    if (selGuardBld && !myBld.some((b) => b[0] === selGuardBld)) selGuardBld = null;
     const hasBakery = myBld.some((b) => TYPE_IDX[b[2]] === 'bakery' && b[6] >= 100);
     const supFull = me[6] >= me[7];
-    const wq = myBld.filter((b) => TYPE_IDX[b[2]] === 'castle').reduce((s, b) => s + b[7], 0);
-    const gq = myBld.filter((b) => TYPE_IDX[b[2]] === 'bakery').reduce((s, b) => s + b[7], 0);
+    const wSrc = selWorkerBld
+      ? myBld.filter((b) => b[0] === selWorkerBld)
+      : myBld.filter((b) => ['castle', 'camp'].includes(TYPE_IDX[b[2]]));
+    const gSrc = selGuardBld
+      ? myBld.filter((b) => b[0] === selGuardBld)
+      : myBld.filter((b) => TYPE_IDX[b[2]] === 'bakery');
+    const wq = wSrc.reduce((s, b) => s + b[7], 0);
+    const gq = gSrc.reduce((s, b) => s + b[7], 0);
     setQ('.ck-q-worker', wq); setQ('.ck-q-guard', gq);
 
     r.querySelector('.ck-train[data-unit="worker"]').disabled = !!me[3] || me[1] < cfg.worker || supFull;
@@ -1319,8 +1439,14 @@ function createController(ctx) {
   }
 
   function tryPlace(clientX, clientY) {
-    if (!placing || !cur) return;
+    if (!cur) return;
     const pt = screenToWorld(clientX, clientY);
+    if (placing === '__rally') {
+      ctx.send({ k: 'gather', x: Math.round(pt.x), y: Math.round(pt.y) });
+      stopPlacing();
+      return;
+    }
+    if (!placing) { trySelect(pt); return; }
     ghost = pt;
     if (ghostValid()) {
       ctx.send({ k: 'build', type: placing, x: Math.round(pt.x), y: Math.round(pt.y) });
@@ -1332,10 +1458,29 @@ function createController(ctx) {
     }
   }
 
+  /* tap one of your castles/camps to pick where helpers spawn,
+     or a bakery to pick where guards spawn */
+  function trySelect(pt) {
+    if (!cur) return;
+    let hit = null, hitD = Infinity;
+    for (const b of cur.snap.b) {
+      if (b[1] !== mySeat || b[6] < 100) continue;
+      const type = TYPE_IDX[b[2]];
+      if (type !== 'castle' && type !== 'camp' && type !== 'bakery') continue;
+      const r = (type === 'castle' ? CASTLE.r : BLD[type].r) + 26;
+      const d = dist(pt.x, pt.y, b[3], b[4]);
+      if (d <= r && d < hitD) { hitD = d; hit = b; }
+    }
+    if (!hit) return;
+    const type = TYPE_IDX[hit[2]];
+    if (type === 'bakery') selGuardBld = (selGuardBld === hit[0]) ? null : hit[0];
+    else selWorkerBld = (selWorkerBld === hit[0]) ? null : hit[0];
+  }
+
   function ghostValid() {
-    if (!ghost || !placing || !cur) return false;
+    if (!ghost || !placing || placing === '__rally' || !cur) return false;
     const snap = cur.snap;
-    const buildings = snap.b.map((b) => ({ seat: b[1], type: TYPE_IDX[b[2]], x: b[3], y: b[4] }));
+    const buildings = snap.b.map((b) => ({ seat: b[1], type: TYPE_IDX[b[2]], x: b[3], y: b[4], prog: b[6] / 100 }));
     const units = snap.u.map((u) => ({ seat: u[1], x: u[3], y: u[4] }));
     return canPlace(world, buildings, units, mySeat, placing, ghost.x, ghost.y);
   }
@@ -1369,7 +1514,7 @@ function createController(ctx) {
       }
     }, { passive: true });
     el.addEventListener('touchend', (e) => {
-      if (touch && touch.mode === 'pan' && touch.moved < 14 && placing) {
+      if (touch && touch.mode === 'pan' && touch.moved < 14) {
         tryPlace(touch.x, touch.y);
       }
       touch = null;
@@ -1387,7 +1532,7 @@ function createController(ctx) {
       mdrag.x = e.clientX; mdrag.y = e.clientY;
     });
     window.addEventListener('mouseup', (e) => {
-      if (mdrag && mdrag.moved < 10 && placing) tryPlace(e.clientX, e.clientY);
+      if (mdrag && mdrag.moved < 10) tryPlace(e.clientX, e.clientY);
       mdrag = null;
     });
     window.addEventListener('resize', sizeCanvas);
@@ -1422,19 +1567,44 @@ function createController(ctx) {
       },
     }, now);
 
-    if (placing && ghost) {
+    if (placing && placing !== '__rally') {
+      /* show where territory reaches: home plot ring + camp auras */
       const s = seats[mySeat];
-      const ok = ghostValid();
-      g.globalAlpha = 0.65;
-      drawBuilding(g, placing, ghost.x, ghost.y, s.color, BLD[placing].hp, BLD[placing].hp, 1);
-      g.globalAlpha = 1;
-      g.lineWidth = 4; g.strokeStyle = ok ? '#6bcf7f' : '#ff4d6d';
-      g.setLineDash([10, 8]);
-      g.beginPath(); g.arc(ghost.x, ghost.y, BLD[placing].r + 16, 0, Math.PI * 2); g.stroke();
+      g.lineWidth = 4; g.strokeStyle = s.color; g.globalAlpha = 0.5; g.setLineDash([6, 12]);
+      for (const b of cur.snap.b) {
+        if (b[1] === mySeat && TYPE_IDX[b[2]] === 'camp' && b[6] >= 100) {
+          g.beginPath(); g.arc(b[3], b[4], CAMP_AURA, 0, Math.PI * 2); g.stroke();
+        }
+      }
+      g.setLineDash([]); g.globalAlpha = 1;
+      if (ghost) {
+        const ok = ghostValid();
+        g.globalAlpha = 0.65;
+        drawBuilding(g, placing, ghost.x, ghost.y, s.color, BLD[placing].hp, BLD[placing].hp, 1);
+        g.globalAlpha = 1;
+        g.lineWidth = 4; g.strokeStyle = ok ? '#6bcf7f' : '#ff4d6d';
+        g.setLineDash([10, 8]);
+        g.beginPath(); g.arc(ghost.x, ghost.y, BLD[placing].r + 16, 0, Math.PI * 2); g.stroke();
+        g.setLineDash([]);
+      }
+    } else if (placing === '__rally' && ghost) {
+      g.font = '34px sans-serif'; g.textAlign = 'center';
+      g.fillText('🚩', ghost.x, ghost.y);
+    }
+
+    /* gold rings on the buildings chosen as spawn points */
+    for (const id of [selWorkerBld, selGuardBld]) {
+      if (!id) continue;
+      const b = cur.snap.b.find((q) => q[0] === id);
+      if (!b) continue;
+      const r2 = (TYPE_IDX[b[2]] === 'castle' ? CASTLE.r : BLD[TYPE_IDX[b[2]]].r) + 18;
+      g.lineWidth = 5; g.strokeStyle = '#ffd93d'; g.setLineDash([12, 9]);
+      g.lineDashOffset = -(now * 0.02) % 21;
+      g.beginPath(); g.arc(b[3], b[4], r2, 0, Math.PI * 2); g.stroke();
       g.setLineDash([]);
     }
 
-    fxLive = fxLive.filter((f) => now - f.t0 < 950);
+    fxLive = fxLive.filter((f) => now - f.t0 < fxLife(f.t) * 1000 + 60);
     drawFx(g, fxLive, now);
   }
 
@@ -1464,6 +1634,6 @@ export default {
 /* headless testing hooks — not used by the app itself */
 export const __sim = {
   buildWorld, makeSim, stepSim, train, build, canPlace, setMode, setTarget, snapshot,
-  supplyCap, supplyUsed, nearestArm,
+  supplyCap, supplyUsed, nearestArm, gather, minersAt, inTowerZone,
   WORKER, GUARD, BLD, CASTLE, MINE, SUPPLY_BASE, SUPPLY_PER_SHACK, START_CANDY, START_WORKERS, TICK_MS,
 };

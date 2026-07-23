@@ -259,3 +259,8 @@
 .ck-ctrl-out-emoji, .ck-ctrl-wait-emoji { font-size: 56px; }
 .ck-ctrl-over-msg { font-size: 26px; line-height: 1.5; }
 .ck-ctrl-over { background: rgba(255, 214, 232, 0.96); }
+
+/* three-way war buttons + gather arming state */
+.ck-warbtn { font-size: 16px; padding: 12px 4px; }
+.ck-warbtn-gather { background: linear-gradient(180deg, #b380ff, #9a63f0); box-shadow: 0 4px 0 #7d4cd1; }
+.ck-warbtn-gather.is-arming { opacity: 1; outline: 3px dashed rgba(255, 217, 61, 0.9); outline-offset: 2px; }
