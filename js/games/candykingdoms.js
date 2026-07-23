@@ -1,20 +1,14 @@
 /* ============================================================
-   Candy Kingdoms — a kid-friendly lane RTS (phase 1: engine core).
+   Candy Kingdoms — a kid-friendly lane RTS (phase 2: economy).
 
-   Up to six kingdoms sit at the points of a snowflake. Each
-   player builds an army at their base; when their Send toggle
-   is on and enough troops have mustered, the squad marches down
-   their lane into the central arena, where all armies collide
-   Clash-style. Survivors push up the lane of whichever player
-   you've targeted and attack their castle. Last castle standing
-   wins.
-
-   Phase 1 scope: world geometry, the 10Hz authoritative sim
-   (muster → send → march → fight → castle damage → elimination),
-   the big-screen renderer with a free host camera, and a phone
-   controller with recruit / send-threshold / target controls
-   plus a passive candy trickle. Workers, buildings, the full
-   unit roster, heroes and conquest arrive in later phases.
+   Up to six kingdoms sit at the points of a snowflake. Gummy
+   Helpers harvest candy from mines and carry it home; Bakeries
+   train gingerbread guards; Sugar Shacks raise your army cap;
+   Candy Camps claim the richer mines down your lane and at the
+   arena rim. When your Send toggle is on and enough troops have
+   mustered, the squad marches down your lane into the arena,
+   fights whatever it meets, then pushes toward whichever castle
+   you've targeted. Last castle standing wins.
 
    The sim is DOM-free on purpose so it can be tested headlessly
    (see the __sim export at the bottom).
@@ -27,80 +21,168 @@ import { escapeHtml } from '../util.js';
 const TICK_MS = 100;          // authoritative sim rate (10 Hz)
 const SNAP_EVERY = 2;         // snapshot to phones every N ticks (5 Hz)
 
-const ARENA_R = 170;          // battle arena radius (world units)
-const LANE_LEN = 430;         // arena rim → base plot rim
-const PLOT_R = 200;           // each kingdom's buildable plot
-const BASE_R = ARENA_R + LANE_LEN + PLOT_R;   // castle distance from center
-const WORLD_R = BASE_R + PLOT_R * 0.6 + 90;   // edge of the cookie
-const LANE_STEPS = 6;         // waypoints per lane
+const ARENA_R = 170;
+const LANE_LEN = 430;
+const PLOT_R = 200;
+const BASE_R = ARENA_R + LANE_LEN + PLOT_R;
+const WORLD_R = BASE_R + PLOT_R * 0.6 + 90;
+const LANE_STEPS = 6;
 
-const CASTLE_HP = 800;
-const CASTLE_R = 56;
+const CASTLE = { hp: 800, r: 56 };
+const WORKER = { hp: 40, speed: 3.1, cost: 30, time: 40, r: 10, carry: 10, mineTicks: 18, fleeR: 110 };
+const GUARD  = { hp: 60, dmg: 8, cd: 8, range: 28, aggro: 130, speed: 2.9, cost: 25, time: 30, r: 13 };
 
-const GUARD = { hp: 60, dmg: 8, cd: 8, range: 28, aggro: 130, speed: 2.9, cost: 20, r: 13 };
+const BLD = {
+  bakery: { hp: 320, cost: 120, time: 110, r: 34, label: 'Bakery' },
+  shack:  { hp: 220, cost: 80,  time: 80,  r: 26, label: 'Sugar Shack' },
+  camp:   { hp: 260, cost: 100, time: 90,  r: 30, label: 'Candy Camp' },
+};
+const TYPE_IDX = ['castle', 'bakery', 'shack', 'camp'];
 
-const START_CANDY = 120;
-const TRICKLE = 0.25;         // candy per tick (2.5/s) — placeholder until workers (phase 2)
+const SUPPLY_BASE = 6, SUPPLY_PER_SHACK = 4, SUPPLY_MAX = 30;
+const START_CANDY = 150, START_WORKERS = 3;
+
+const MINE = { r: 34, starter: 500, lane: 800, rim: 1400 };
+const HARVEST_LEASH = 270;    // a mine works only near one of your drop-offs
+const BUILD_LEASH = 240;      // build near your buildings or troops…
+const QUEUE_MAX = 5;
+
 const THR_MIN = 1, THR_MAX = 30;
-const SEP_R = 20;             // unit separation radius
+const SEP_R = 20;
 
 /* ================= geometry (pure) ================= */
 
 function armAngle(i, n) { return -Math.PI / 2 + (i * 2 * Math.PI) / n; }
 function polar(a, r) { return { x: Math.cos(a) * r, y: Math.sin(a) * r }; }
-function dist(ax, ay, bx, by) { const dx = ax - bx, dy = ay - by; return Math.hypot(dx, dy); }
+function dist(ax, ay, bx, by) { return Math.hypot(ax - bx, ay - by); }
 
-/* buildWorld(n) → static geometry for an n-armed snowflake.
+/* buildWorld(n) → static geometry, including mine positions.
    Lanes are stored base→arena (index 0 nearest the castle). */
 function buildWorld(n) {
-  const arms = [];
+  const arms = [], mines = [];
   for (let i = 0; i < n; i++) {
     const a = armAngle(i, n);
     const base = polar(a, BASE_R);
-    const muster = polar(a, BASE_R - CASTLE_R - 78);
+    const perp = { x: -Math.sin(a), y: Math.cos(a) };
+    const muster = polar(a, BASE_R - CASTLE.r - 78);
     const lane = [];
-    const r0 = BASE_R - PLOT_R * 0.55;      // lane starts inside the plot
-    const r1 = ARENA_R + 14;                // and ends at the arena rim
-    for (let k = 0; k <= LANE_STEPS; k++) {
-      lane.push(polar(a, r0 + (r1 - r0) * (k / LANE_STEPS)));
-    }
-    const hold = polar(a, ARENA_R * 0.38);  // where a squad waits inside the arena
+    const r0 = BASE_R - PLOT_R * 0.55, r1 = ARENA_R + 14;
+    for (let k = 0; k <= LANE_STEPS; k++) lane.push(polar(a, r0 + (r1 - r0) * (k / LANE_STEPS)));
+    const hold = polar(a, ARENA_R * 0.38);
     arms.push({ seat: i, angle: a, base, muster, lane, hold });
+
+    /* three mines per arm: cozy starter, mid-lane, rich arena rim */
+    mines.push({ x: base.x + perp.x * 145, y: base.y + perp.y * 145, max: MINE.starter, kind: 'starter', arm: i });
+    const mid = polar(a, (ARENA_R + BASE_R) / 2);
+    mines.push({ x: mid.x + perp.x * 125, y: mid.y + perp.y * 125, max: MINE.lane, kind: 'lane', arm: i });
+    const rim = polar(a, ARENA_R + 115);
+    mines.push({ x: rim.x + perp.x * 95, y: rim.y + perp.y * 95, max: MINE.rim, kind: 'rim', arm: i });
   }
-  return { n, arms, arenaR: ARENA_R, plotR: PLOT_R, baseR: BASE_R, worldR: WORLD_R, castleR: CASTLE_R };
+  return { n, arms, mines, arenaR: ARENA_R, plotR: PLOT_R, baseR: BASE_R, worldR: WORLD_R, castleR: CASTLE.r };
 }
 
 /* ================= simulation (pure, DOM-free) ================= */
 
 function makeSim(n) {
-  const players = [];
+  const world = buildWorld(n);
+  const players = [], buildings = [], units = [];
+  let uid = 1;
   for (let i = 0; i < n; i++) {
-    players.push({
-      seat: i, candy: START_CANDY, castleHp: CASTLE_HP,
-      elim: false, send: false, thr: 8, target: -1,
-    });
+    players.push({ seat: i, candy: START_CANDY, castleHp: CASTLE.hp, elim: false, send: false, thr: 8, target: -1 });
+    const b = world.arms[i].base;
+    buildings.push({ id: 'c' + i, seat: i, type: 'castle', x: b.x, y: b.y, hp: CASTLE.hp, maxHp: CASTLE.hp, prog: 1, queue: [] });
+    for (let w = 0; w < START_WORKERS; w++) {
+      units.push(newUnit(uid++, i, 'worker', b.x + (Math.random() - 0.5) * 90, b.y + (Math.random() - 0.5) * 90));
+    }
   }
   return {
-    tick: 0, world: buildWorld(n), players,
-    units: [], fx: [], nextUid: 1,
+    tick: 0, world, players, buildings, units,
+    mines: world.mines.map((m) => m.max),
+    fx: [], nextUid: uid, nextBid: 1,
     over: false, winner: -1,
   };
 }
 
-function recruitGuard(sim, seat) {
+function newUnit(id, seat, kind, x, y) {
+  const def = kind === 'worker' ? WORKER : GUARD;
+  return {
+    id, seat, kind, x, y, px: x, py: y, hp: def.hp,
+    st: kind === 'worker' ? 'idle' : 'muster',
+    path: null, pi: 0, cd: 0, carry: 0, mineIdx: -1, mt: 0,
+  };
+}
+
+function supplyCap(sim, seat) {
+  let shacks = 0;
+  for (const b of sim.buildings) if (b.seat === seat && b.type === 'shack' && b.prog >= 1) shacks++;
+  return Math.min(SUPPLY_MAX, SUPPLY_BASE + shacks * SUPPLY_PER_SHACK);
+}
+function supplyUsed(sim, seat) {
+  let n = 0;
+  for (const u of sim.units) if (u.seat === seat) n++;
+  for (const b of sim.buildings) if (b.seat === seat) n += b.queue.length;
+  return n;
+}
+
+/* queue a unit at the right building (castle→worker, bakery→guard) */
+function train(sim, seat, kind) {
   const p = sim.players[seat];
   if (!p || p.elim || sim.over) return false;
-  if (p.candy < GUARD.cost) return false;
-  p.candy -= GUARD.cost;
-  const arm = sim.world.arms[seat];
-  const jx = (Math.random() - 0.5) * 70, jy = (Math.random() - 0.5) * 70;
-  sim.units.push({
-    id: sim.nextUid++, seat, type: 'guard',
-    x: arm.muster.x + jx, y: arm.muster.y + jy,
-    px: arm.muster.x + jx, py: arm.muster.y + jy,
-    hp: GUARD.hp, st: 'muster', path: null, pi: 0, cd: 0, tgt: null,
+  const def = kind === 'worker' ? WORKER : kind === 'guard' ? GUARD : null;
+  if (!def) return false;
+  const btype = kind === 'worker' ? 'castle' : 'bakery';
+  let best = null;
+  for (const b of sim.buildings) {
+    if (b.seat === seat && b.type === btype && b.prog >= 1 && b.queue.length < QUEUE_MAX) {
+      if (!best || b.queue.length < best.queue.length) best = b;
+    }
+  }
+  if (!best) return false;
+  if (p.candy < def.cost) return false;
+  if (supplyUsed(sim, seat) + 1 > supplyCap(sim, seat)) return false;
+  p.candy -= def.cost;
+  best.queue.push({ kind, t: def.time });
+  return true;
+}
+
+/* placement rules — shared with the phone so the ghost can go green/red.
+   Plain-array signature keeps it usable client-side from snapshots. */
+function canPlace(world, buildings, units, seat, type, x, y) {
+  const def = BLD[type];
+  if (!def) return false;
+  if (Math.hypot(x, y) > WORLD_R - 30) return false;              // stay on the cookie
+  if (Math.hypot(x, y) < ARENA_R + 46) return false;              // the arena stays wild
+  for (const b of buildings) {
+    const br = b.type === 'castle' ? CASTLE.r : BLD[b.type].r;
+    if (dist(x, y, b.x, b.y) < def.r + br + 14) return false;     // no stacking
+  }
+  for (const m of world.mines) {
+    if (dist(x, y, m.x, m.y) < def.r + MINE.r + 10) return false; // don't squish the candy
+  }
+  /* territory: your plot, or near anything of yours (build where your troops have gone) */
+  const home = world.arms[seat] ? world.arms[seat].base : null;
+  if (home && dist(x, y, home.x, home.y) <= PLOT_R) return true;
+  for (const b of buildings) {
+    if (b.seat === seat && dist(x, y, b.x, b.y) <= BUILD_LEASH) return true;
+  }
+  for (const u of units) {
+    if (u.seat === seat && dist(x, y, u.x, u.y) <= BUILD_LEASH) return true;
+  }
+  return false;
+}
+
+function build(sim, seat, type, x, y) {
+  const p = sim.players[seat];
+  if (!p || p.elim || sim.over) return false;
+  const def = BLD[type];
+  if (!def || p.candy < def.cost) return false;
+  if (!canPlace(sim.world, sim.buildings, sim.units, seat, type, x, y)) return false;
+  p.candy -= def.cost;
+  sim.buildings.push({
+    id: 'b' + sim.nextBid++, seat, type, x, y,
+    hp: def.hp, maxHp: def.hp, prog: 0, queue: [],
   });
-  sim.fx.push({ t: 'spawn', x: arm.muster.x + jx, y: arm.muster.y + jy });
+  sim.fx.push({ t: 'spawn', x, y });
   return true;
 }
 
@@ -121,15 +203,12 @@ function setTarget(sim, seat, target) {
   if (t && !t.elim && target !== seat) p.target = target;
 }
 
-/* path a squad walks from the arena to an enemy castle */
 function pushPath(world, targetSeat) {
   const arm = world.arms[targetSeat];
   const path = arm.lane.slice().reverse().map((pt) => ({ x: pt.x, y: pt.y }));
   path.push({ x: arm.base.x, y: arm.base.y, castle: targetSeat });
   return path;
 }
-
-/* path a squad walks from its base down into the arena */
 function marchPath(world, seat) {
   const arm = world.arms[seat];
   const path = arm.lane.map((pt) => ({ x: pt.x, y: pt.y }));
@@ -137,12 +216,9 @@ function marchPath(world, seat) {
   return path;
 }
 
-function findUnit(sim, id) {
-  for (const u of sim.units) if (u.id === id) return u;
-  return null;
-}
+function bldRadius(b) { return b.type === 'castle' ? CASTLE.r : BLD[b.type].r; }
 
-/* nearest living enemy unit or castle within `radius` of u */
+/* nearest living enemy unit or building within `radius` of u */
 function nearestEnemy(sim, u, radius) {
   let best = null, bestD = radius;
   for (const e of sim.units) {
@@ -150,11 +226,37 @@ function nearestEnemy(sim, u, radius) {
     const d = dist(u.x, u.y, e.x, e.y);
     if (d < bestD) { bestD = d; best = { unit: e, d }; }
   }
-  for (const p of sim.players) {
-    if (p.seat === u.seat || p.elim) continue;
-    const b = sim.world.arms[p.seat].base;
-    const d = dist(u.x, u.y, b.x, b.y) - CASTLE_R;   // to the castle's wall
-    if (d < bestD) { bestD = d; best = { castle: p.seat, d, x: b.x, y: b.y }; }
+  for (const b of sim.buildings) {
+    if (b.seat === u.seat || b.hp <= 0) continue;
+    const d = dist(u.x, u.y, b.x, b.y) - bldRadius(b);
+    if (d < bestD) { bestD = d; best = { bld: b, d, x: b.x, y: b.y }; }
+  }
+  return best;
+}
+
+function dropoffs(sim, seat) {
+  return sim.buildings.filter((b) => b.seat === seat && b.prog >= 1 && (b.type === 'castle' || b.type === 'camp'));
+}
+function nearestDropoff(sim, seat, x, y) {
+  let best = null, bestD = Infinity;
+  for (const b of dropoffs(sim, seat)) {
+    const d = dist(x, y, b.x, b.y);
+    if (d < bestD) { bestD = d; best = b; }
+  }
+  return best;
+}
+/* a mine is workable if it has stock and sits near one of your drop-offs */
+function pickMine(sim, seat, x, y) {
+  let best = -1, bestD = Infinity;
+  const drops = dropoffs(sim, seat);
+  for (let i = 0; i < sim.world.mines.length; i++) {
+    if (sim.mines[i] <= 0) continue;
+    const m = sim.world.mines[i];
+    let leashed = false;
+    for (const b of drops) if (dist(m.x, m.y, b.x, b.y) <= HARVEST_LEASH) { leashed = true; break; }
+    if (!leashed) continue;
+    const d = dist(x, y, m.x, m.y);
+    if (d < bestD) { bestD = d; best = i; }
   }
   return best;
 }
@@ -172,13 +274,14 @@ function eliminate(sim, seat, bySeat) {
   if (!p || p.elim) return;
   p.elim = true;
   p.send = false;
-  const b = sim.world.arms[seat].base;
-  sim.fx.push({ t: 'boom', x: b.x, y: b.y });
-  // their troops pop like balloons — nothing dark here
+  const home = sim.world.arms[seat].base;
+  sim.fx.push({ t: 'boom', x: home.x, y: home.y });
   for (const u of sim.units) {
     if (u.seat === seat && u.hp > 0) { u.hp = 0; sim.fx.push({ t: 'poof', x: u.x, y: u.y }); }
   }
-  // anyone aiming at them needs a new plan
+  for (const b of sim.buildings) {
+    if (b.seat === seat && b.hp > 0 && b.type !== 'castle') { b.hp = 0; sim.fx.push({ t: 'poof', x: b.x, y: b.y }); }
+  }
   for (const q of sim.players) if (q.target === seat) q.target = -1;
   sim.lastElim = { seat, bySeat: typeof bySeat === 'number' ? bySeat : -1 };
 
@@ -189,19 +292,48 @@ function eliminate(sim, seat, bySeat) {
   }
 }
 
+function damageBuilding(sim, b, dmg, bySeat) {
+  b.hp -= dmg;
+  if (b.hp <= 0) {
+    b.hp = 0;
+    if (b.type === 'castle') {
+      sim.players[b.seat].castleHp = 0;
+      eliminate(sim, b.seat, bySeat);
+    } else {
+      sim.fx.push({ t: 'poof', x: b.x, y: b.y });
+    }
+  }
+}
+
 function stepSim(sim) {
   if (sim.over) return;
   sim.tick++;
   const world = sim.world;
 
-  /* income (placeholder trickle until workers arrive in phase 2) */
-  for (const p of sim.players) if (!p.elim) p.candy += TRICKLE;
+  /* construction + training queues */
+  for (const b of sim.buildings) {
+    if (b.hp <= 0) continue;
+    if (b.prog < 1) {
+      b.prog = Math.min(1, b.prog + 1 / BLD[b.type].time);
+      if (b.prog >= 1) sim.fx.push({ t: 'spawn', x: b.x, y: b.y });
+      continue;
+    }
+    if (b.queue.length) {
+      const job = b.queue[0];
+      job.t--;
+      if (job.t <= 0) {
+        b.queue.shift();
+        const jx = (Math.random() - 0.5) * 60, jy = (Math.random() - 0.5) * 60;
+        sim.units.push(newUnit(sim.nextUid++, b.seat, job.kind, b.x + jx, b.y + jy + bldRadius(b) * 0.6));
+        sim.fx.push({ t: 'spawn', x: b.x + jx, y: b.y + jy });
+      }
+    }
+  }
 
-  /* send: when the toggle is on and enough troops have mustered,
-     the whole mustered group marches as one squad */
+  /* send: enough guards mustered → the squad marches */
   for (const p of sim.players) {
     if (p.elim || !p.send) continue;
-    const mustered = sim.units.filter((u) => u.seat === p.seat && u.st === 'muster' && u.hp > 0);
+    const mustered = sim.units.filter((u) => u.seat === p.seat && u.kind === 'guard' && u.st === 'muster' && u.hp > 0);
     if (mustered.length >= p.thr) {
       const path = marchPath(world, p.seat);
       for (const u of mustered) { u.st = 'path'; u.path = path.map((q) => ({ ...q })); u.pi = 0; }
@@ -215,11 +347,50 @@ function stepSim(sim) {
     u.px = u.x; u.py = u.y;
     if (u.cd > 0) u.cd--;
 
-    /* mustered troops stand guard at home (they'll still defend — aggro below) */
-    const foe = u.st === 'muster'
-      ? nearestEnemy(sim, u, GUARD.aggro)
-      : nearestEnemy(sim, u, GUARD.aggro * (u.st === 'hold' ? 1.6 : 1));
+    /* ---- Gummy Helpers: harvest, carry, and run from trouble ---- */
+    if (u.kind === 'worker') {
+      const scary = nearestEnemy(sim, u, WORKER.fleeR);
+      if (scary && scary.unit) {
+        const safe = nearestDropoff(sim, u.seat, u.x, u.y);
+        if (safe) { moveToward(u, safe.x, safe.y, WORKER.speed * 1.25); continue; }
+      }
+      if (u.st === 'idle') {
+        const mi = pickMine(sim, u.seat, u.x, u.y);
+        if (mi >= 0) { u.mineIdx = mi; u.st = 'toMine'; }
+        else {
+          const home = nearestDropoff(sim, u.seat, u.x, u.y);
+          if (home && dist(u.x, u.y, home.x, home.y) > 140) moveToward(u, home.x, home.y, WORKER.speed);
+        }
+      } else if (u.st === 'toMine') {
+        if (u.mineIdx < 0 || sim.mines[u.mineIdx] <= 0) { u.st = 'idle'; continue; }
+        const m = world.mines[u.mineIdx];
+        moveToward(u, m.x, m.y, WORKER.speed);
+        if (dist(u.x, u.y, m.x, m.y) <= MINE.r + 16) { u.st = 'mining'; u.mt = WORKER.mineTicks; }
+      } else if (u.st === 'mining') {
+        u.mt--;
+        if (u.mt <= 0) {
+          const stock = sim.mines[u.mineIdx] || 0;
+          const take = Math.min(WORKER.carry, stock);
+          if (take > 0) {
+            sim.mines[u.mineIdx] = stock - take;
+            if (sim.mines[u.mineIdx] <= 0) sim.fx.push({ t: 'poof', x: world.mines[u.mineIdx].x, y: world.mines[u.mineIdx].y });
+            u.carry = take; u.st = 'toDrop';
+          } else { u.st = 'idle'; }
+        }
+      } else if (u.st === 'toDrop') {
+        const drop = nearestDropoff(sim, u.seat, u.x, u.y);
+        if (!drop) { u.st = 'idle'; continue; }
+        moveToward(u, drop.x, drop.y, WORKER.speed);
+        if (dist(u.x, u.y, drop.x, drop.y) <= bldRadius(drop) + 14) {
+          sim.players[u.seat].candy += u.carry;
+          u.carry = 0; u.st = 'idle';
+        }
+      }
+      continue;
+    }
 
+    /* ---- Gingerbread Guards ---- */
+    const foe = nearestEnemy(sim, u, GUARD.aggro * (u.st === 'hold' ? 1.6 : 1));
     if (foe) {
       if (foe.unit) {
         const e = foe.unit;
@@ -229,38 +400,33 @@ function stepSim(sim) {
             sim.fx.push({ t: 'hit', x: e.x, y: e.y });
             if (e.hp <= 0) sim.fx.push({ t: 'poof', x: e.x, y: e.y });
           }
-        } else {
-          moveToward(u, e.x, e.y, GUARD.speed);
-        }
+        } else moveToward(u, e.x, e.y, GUARD.speed);
         continue;
       }
-      if (typeof foe.castle === 'number') {
+      if (foe.bld) {
         if (foe.d <= GUARD.range) {
           if (u.cd === 0) {
-            const tp = sim.players[foe.castle];
-            tp.castleHp -= GUARD.dmg; u.cd = GUARD.cd;
-            sim.fx.push({ t: 'hit', x: foe.x, y: foe.y - CASTLE_R * 0.5 });
-            if (tp.castleHp <= 0) { tp.castleHp = 0; eliminate(sim, foe.castle, u.seat); }
+            damageBuilding(sim, foe.bld, GUARD.dmg, u.seat); u.cd = GUARD.cd;
+            sim.fx.push({ t: 'hit', x: foe.x, y: foe.y - bldRadius(foe.bld) * 0.5 });
           }
-        } else {
-          moveToward(u, foe.x, foe.y, GUARD.speed);
-        }
+        } else moveToward(u, foe.x, foe.y, GUARD.speed);
         continue;
       }
     }
 
-    /* no fight nearby — walk the plan */
-    if (u.st === 'path' && u.path) {
+    if (u.st === 'muster') {
+      const m = world.arms[u.seat].muster;
+      if (dist(u.x, u.y, m.x, m.y) > 80) moveToward(u, m.x, m.y, GUARD.speed);
+    } else if (u.st === 'path' && u.path) {
       const wp = u.path[u.pi];
       moveToward(u, wp.x, wp.y, GUARD.speed);
-      const arrive = typeof wp.castle === 'number' ? CASTLE_R + GUARD.range - 6 : 14;
+      const arrive = typeof wp.castle === 'number' ? CASTLE.r + GUARD.range - 6 : 14;
       if (dist(u.x, u.y, wp.x, wp.y) <= arrive) {
         if (wp.hold) { u.st = 'hold'; u.path = null; }
-        else if (typeof wp.castle === 'number') { /* castle handled by aggro above */ }
+        else if (typeof wp.castle === 'number') { /* handled by aggro */ }
         else if (u.pi < u.path.length - 1) u.pi++;
       }
     } else if (u.st === 'hold') {
-      /* waiting in the arena — if my player has picked a target, push! */
       const p = sim.players[u.seat];
       if (p.target >= 0 && !sim.players[p.target].elim) {
         u.st = 'path'; u.path = pushPath(world, p.target); u.pi = 0;
@@ -268,7 +434,7 @@ function stepSim(sim) {
     }
   }
 
-  /* gentle separation so squads look like crowds, not a single dot */
+  /* gentle crowding so squads read as crowds, not a dot */
   const live = sim.units.filter((u) => u.hp > 0);
   for (let i = 0; i < live.length; i++) {
     for (let j = i + 1; j < live.length; j++) {
@@ -286,20 +452,27 @@ function stepSim(sim) {
     }
   }
 
-  /* sweep the fallen */
+  /* keep the banner mirror fresh + sweep the fallen */
+  for (const b of sim.buildings) {
+    if (b.type === 'castle' && b.hp > 0) sim.players[b.seat].castleHp = b.hp;
+  }
   sim.units = sim.units.filter((u) => u.hp > 0);
+  sim.buildings = sim.buildings.filter((b) => b.hp > 0);
 }
 
 /* compact wire format for phones */
 function snapshot(sim) {
-  const u = sim.units.map((x) => [x.id, x.seat, Math.round(x.x), Math.round(x.y), x.hp]);
+  const u = sim.units.map((x) => [x.id, x.seat, x.kind === 'worker' ? 0 : 1, Math.round(x.x), Math.round(x.y), x.hp, x.carry > 0 ? 1 : 0]);
+  const b = sim.buildings.map((x) => [x.id, x.seat, TYPE_IDX.indexOf(x.type), Math.round(x.x), Math.round(x.y), x.hp, Math.round(x.prog * 100), x.queue.length]);
   const pl = sim.players.map((p) => [
     p.seat, Math.floor(p.candy), Math.round(p.castleHp), p.elim ? 1 : 0,
     p.send ? 1 : 0, p.thr, p.target,
+    supplyUsed(sim, p.seat), supplyCap(sim, p.seat),
+    sim.units.filter((x) => x.seat === p.seat && x.kind === 'guard' && x.st === 'muster').length,
   ]);
   const fx = sim.fx.map((f) => [f.t, Math.round(f.x), Math.round(f.y)]);
   sim.fx = [];
-  const snap = { k: 'snap', n: sim.tick, u, pl, fx };
+  const snap = { k: 'snap', n: sim.tick, u, b, m: sim.mines.slice(), pl, fx };
   if (sim.over) { snap.over = 1; snap.winner = sim.winner; }
   if (sim.lastElim) { snap.elim = sim.lastElim; sim.lastElim = null; }
   return snap;
@@ -307,8 +480,7 @@ function snapshot(sim) {
 
 /* ================= shared drawing =================
    One renderer for the TV and the phones — same world,
-   different camera. `view` is {units, players} in sim-like
-   shape; `seats` maps seat → {name, avatar, color}. */
+   different camera. */
 
 function laneWidth() { return 46; }
 
@@ -320,7 +492,6 @@ function shade(hex, f) {
   return `rgb(${r},${g},${b})`;
 }
 
-/* deterministic sprinkle field so the cookie looks the same every frame */
 const SPRINKLES = (() => {
   const out = []; let s = 42;
   const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
@@ -332,8 +503,16 @@ const SPRINKLES = (() => {
   return out;
 })();
 
+function rr(g, x, y, w, h, r) {
+  g.beginPath();
+  if (typeof g.roundRect === 'function') { g.roundRect(x, y, w, h, r); return; }
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+
 function drawTerrain(g, world, seats, t) {
-  /* the cookie */
   g.fillStyle = '#ffedd2';
   g.beginPath(); g.arc(0, 0, world.worldR, 0, Math.PI * 2); g.fill();
   g.lineWidth = 14; g.strokeStyle = '#f3c98b'; g.stroke();
@@ -347,7 +526,6 @@ function drawTerrain(g, world, seats, t) {
   }
   g.restore();
 
-  /* kingdom plots */
   for (const arm of world.arms) {
     const col = seats[arm.seat] ? seats[arm.seat].color : '#cccccc';
     g.fillStyle = col; g.globalAlpha = 0.14;
@@ -357,7 +535,6 @@ function drawTerrain(g, world, seats, t) {
     g.setLineDash([]); g.globalAlpha = 1;
   }
 
-  /* candy-road lanes */
   for (const arm of world.arms) {
     const col = seats[arm.seat] ? seats[arm.seat].color : '#cccccc';
     const a = arm.lane[0], b = arm.lane[arm.lane.length - 1];
@@ -372,7 +549,6 @@ function drawTerrain(g, world, seats, t) {
     g.setLineDash([]); g.globalAlpha = 1;
   }
 
-  /* the arena — a lollipop swirl */
   g.beginPath(); g.arc(0, 0, world.arenaR, 0, Math.PI * 2);
   g.fillStyle = '#fff3f8'; g.fill();
   g.lineWidth = 10; g.strokeStyle = '#ffb3d1'; g.stroke();
@@ -388,10 +564,38 @@ function drawTerrain(g, world, seats, t) {
   g.stroke(); g.restore();
 }
 
+function drawMine(g, x, y, stock, max) {
+  const frac = Math.max(0, Math.min(1, stock / max));
+  g.save(); g.translate(x, y);
+  if (frac <= 0) {
+    g.fillStyle = '#e3d5c0';
+    g.beginPath(); g.arc(0, 6, 16, 0, Math.PI * 2); g.fill();
+    g.font = '14px sans-serif'; g.textAlign = 'center'; g.globalAlpha = 0.7;
+    g.fillText('🍂', 0, 10);
+    g.restore(); return;
+  }
+  const mounds = [
+    { dx: -14, dy: 6, r: 14, c: '#ff8fb3' },
+    { dx: 13, dy: 7, r: 12, c: '#7fd4ff' },
+    { dx: 0, dy: -6, r: 16, c: '#ffd93d' },
+  ];
+  for (const m of mounds) {
+    const r = m.r * (0.45 + 0.55 * frac);
+    g.fillStyle = m.c; g.strokeStyle = shade(m.c === '#ffd93d' ? '#d9a800' : m.c, 0.75); g.lineWidth = 2.5;
+    g.beginPath(); g.arc(m.dx * (0.6 + 0.4 * frac), m.dy, r, Math.PI, 0);
+    g.quadraticCurveTo(m.dx * (0.6 + 0.4 * frac), m.dy + r * 0.8, m.dx * (0.6 + 0.4 * frac) - r, m.dy);
+    g.closePath(); g.fill(); g.stroke();
+  }
+  g.font = '13px sans-serif'; g.textAlign = 'center';
+  g.fillText('✨', 12, -14);
+  g.fillStyle = 'rgba(74,37,69,.25)'; rr(g, -22, 24, 44, 6, 3); g.fill();
+  g.fillStyle = '#ffb020'; rr(g, -22, 24, Math.max(4, 44 * frac), 6, 3); g.fill();
+  g.restore();
+}
+
 function drawCastle(g, x, y, color, hp, elim, name, avatar) {
   g.save(); g.translate(x, y);
   if (elim) {
-    /* crumbled into sprinkles — friendly ruins */
     g.fillStyle = '#e8d9c4';
     for (let i = 0; i < 5; i++) {
       const a = (i / 5) * Math.PI * 2;
@@ -401,69 +605,126 @@ function drawCastle(g, x, y, color, hp, elim, name, avatar) {
     g.restore(); return;
   }
   const dark = shade(color, 0.72);
-  /* body */
   g.fillStyle = color; g.strokeStyle = dark; g.lineWidth = 4;
-  rr(g, -CASTLE_R * 0.78, -CASTLE_R * 0.55, CASTLE_R * 1.56, CASTLE_R * 1.15, 12);
+  rr(g, -CASTLE.r * 0.78, -CASTLE.r * 0.55, CASTLE.r * 1.56, CASTLE.r * 1.15, 12);
   g.fill(); g.stroke();
-  /* towers */
-  for (const tx of [-CASTLE_R * 0.62, 0, CASTLE_R * 0.62]) {
+  for (const tx of [-CASTLE.r * 0.62, 0, CASTLE.r * 0.62]) {
     g.fillStyle = color;
-    rr(g, tx - 13, -CASTLE_R * 0.95, 26, CASTLE_R * 0.55, 8); g.fill(); g.stroke();
+    rr(g, tx - 13, -CASTLE.r * 0.95, 26, CASTLE.r * 0.55, 8); g.fill(); g.stroke();
     g.fillStyle = '#fff';
-    g.beginPath(); g.arc(tx, -CASTLE_R * 0.95, 10, Math.PI, 0); g.fill(); g.stroke();
+    g.beginPath(); g.arc(tx, -CASTLE.r * 0.95, 10, Math.PI, 0); g.fill(); g.stroke();
   }
-  /* frosting door + flag */
   g.fillStyle = '#fff8f0';
-  rr(g, -14, CASTLE_R * 0.05, 28, CASTLE_R * 0.55, 10); g.fill();
+  rr(g, -14, CASTLE.r * 0.05, 28, CASTLE.r * 0.55, 10); g.fill();
   g.strokeStyle = dark; g.stroke();
-  g.strokeStyle = dark; g.lineWidth = 3;
-  g.beginPath(); g.moveTo(0, -CASTLE_R * 1.05); g.lineTo(0, -CASTLE_R * 1.45); g.stroke();
+  g.lineWidth = 3;
+  g.beginPath(); g.moveTo(0, -CASTLE.r * 1.05); g.lineTo(0, -CASTLE.r * 1.45); g.stroke();
   g.fillStyle = color;
-  g.beginPath(); g.moveTo(0, -CASTLE_R * 1.45); g.lineTo(30, -CASTLE_R * 1.33); g.lineTo(0, -CASTLE_R * 1.21);
+  g.beginPath(); g.moveTo(0, -CASTLE.r * 1.45); g.lineTo(30, -CASTLE.r * 1.33); g.lineTo(0, -CASTLE.r * 1.21);
   g.closePath(); g.fill(); g.stroke();
-  /* hp bar */
-  const w = CASTLE_R * 1.7, frac = Math.max(0, hp / CASTLE_HP);
-  g.fillStyle = 'rgba(74,37,69,.25)'; rr(g, -w / 2, CASTLE_R * 0.78, w, 12, 6); g.fill();
+  const w = CASTLE.r * 1.7, frac = Math.max(0, hp / CASTLE.hp);
+  g.fillStyle = 'rgba(74,37,69,.25)'; rr(g, -w / 2, CASTLE.r * 0.78, w, 12, 6); g.fill();
   g.fillStyle = frac > 0.4 ? '#6bcf7f' : (frac > 0.18 ? '#ffd93d' : '#ff4d6d');
-  if (frac > 0) { rr(g, -w / 2, CASTLE_R * 0.78, Math.max(10, w * frac), 12, 6); g.fill(); }
-  /* nameplate */
+  if (frac > 0) { rr(g, -w / 2, CASTLE.r * 0.78, Math.max(10, w * frac), 12, 6); g.fill(); }
   g.font = '600 22px Fredoka, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
   g.fillStyle = '#4a2545';
-  g.fillText(`${avatar || ''} ${name || ''}`.trim(), 0, CASTLE_R * 1.22);
+  g.fillText(`${avatar || ''} ${name || ''}`.trim(), 0, CASTLE.r * 1.22);
   g.restore();
 }
 
-function rr(g, x, y, w, h, r) {
-  g.beginPath();
-  if (typeof g.roundRect === 'function') { g.roundRect(x, y, w, h, r); return; }
-  g.moveTo(x + r, y);
-  g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
-  g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r);
-  g.closePath();
+/* bakery / shack / camp — cute, chunky, readable at any zoom */
+function drawBuilding(g, type, x, y, color, hp, maxHp, prog) {
+  g.save(); g.translate(x, y);
+  const dark = shade(color, 0.72);
+  const building = prog < 1;
+  if (building) g.globalAlpha = 0.6;
+  g.strokeStyle = dark; g.lineWidth = 3;
+
+  if (type === 'bakery') {
+    g.fillStyle = '#fff0dd';
+    rr(g, -30, -16, 60, 36, 8); g.fill(); g.stroke();
+    g.fillStyle = color;
+    g.beginPath(); g.moveTo(-36, -14); g.lineTo(0, -40); g.lineTo(36, -14); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#fff';
+    rr(g, 14, -36, 10, 16, 3); g.fill(); g.stroke();
+    g.fillStyle = dark;
+    rr(g, -8, 2, 16, 18, 5); g.fill();
+    g.font = '13px sans-serif'; g.textAlign = 'center'; g.fillText('🍪', -16, 10);
+  } else if (type === 'shack') {
+    g.fillStyle = '#fff0dd';
+    rr(g, -22, -10, 44, 28, 7); g.fill(); g.stroke();
+    g.fillStyle = color;
+    g.beginPath(); g.moveTo(-27, -8); g.lineTo(0, -28); g.lineTo(27, -8); g.closePath(); g.fill(); g.stroke();
+    g.font = '15px sans-serif'; g.textAlign = 'center'; g.fillText('🍭', 0, 8);
+  } else if (type === 'camp') {
+    g.fillStyle = color;
+    g.beginPath(); g.moveTo(-28, 16); g.lineTo(0, -26); g.lineTo(28, 16); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#fff8f0';
+    g.beginPath(); g.moveTo(-9, 16); g.lineTo(0, 0); g.lineTo(9, 16); g.closePath(); g.fill(); g.stroke();
+    g.lineWidth = 2.5;
+    g.beginPath(); g.moveTo(0, -26); g.lineTo(0, -38); g.stroke();
+    g.fillStyle = '#ffd93d';
+    g.beginPath(); g.moveTo(0, -38); g.lineTo(14, -33); g.lineTo(0, -28); g.closePath(); g.fill(); g.stroke();
+  }
+  g.globalAlpha = 1;
+
+  if (building) {
+    g.fillStyle = 'rgba(74,37,69,.25)'; rr(g, -24, 22, 48, 7, 4); g.fill();
+    g.fillStyle = '#4dabf7'; rr(g, -24, 22, Math.max(4, 48 * prog), 7, 4); g.fill();
+    g.font = '12px sans-serif'; g.textAlign = 'center'; g.fillText('🔨', 0, -44);
+  } else if (hp < maxHp) {
+    const frac = hp / maxHp;
+    g.fillStyle = 'rgba(74,37,69,.25)'; rr(g, -24, 22, 48, 7, 4); g.fill();
+    g.fillStyle = frac > 0.4 ? '#6bcf7f' : '#ff4d6d';
+    rr(g, -24, 22, Math.max(4, 48 * frac), 7, 4); g.fill();
+  }
+  g.restore();
 }
 
 function drawGuard(g, x, y, color, hp, wobble) {
   const dark = shade(color, 0.7);
   g.save(); g.translate(x, y);
   g.rotate(Math.sin(wobble) * 0.08);
-  /* gumdrop body */
   g.fillStyle = color; g.strokeStyle = dark; g.lineWidth = 2.5;
   g.beginPath(); g.arc(0, 0, GUARD.r, Math.PI, 0);
   g.lineTo(GUARD.r, GUARD.r * 0.55);
   g.quadraticCurveTo(0, GUARD.r * 0.95, -GUARD.r, GUARD.r * 0.55);
   g.closePath(); g.fill(); g.stroke();
-  /* face */
   g.fillStyle = '#3a2038';
   g.beginPath(); g.arc(-4.5, -2, 2.1, 0, Math.PI * 2); g.fill();
   g.beginPath(); g.arc(4.5, -2, 2.1, 0, Math.PI * 2); g.fill();
   g.strokeStyle = '#3a2038'; g.lineWidth = 1.8;
   g.beginPath(); g.arc(0, 2.5, 4, 0.15 * Math.PI, 0.85 * Math.PI); g.stroke();
-  /* hp pip when hurt */
   if (hp < GUARD.hp) {
     const frac = hp / GUARD.hp;
     g.fillStyle = 'rgba(74,37,69,.3)'; rr(g, -11, -GUARD.r - 8, 22, 4, 2); g.fill();
     g.fillStyle = frac > 0.4 ? '#6bcf7f' : '#ff4d6d';
     rr(g, -11, -GUARD.r - 8, Math.max(3, 22 * frac), 4, 2); g.fill();
+  }
+  g.restore();
+}
+
+/* little round helper with a hard hat; shows a candy when carrying */
+function drawWorker(g, x, y, color, hp, carrying, wobble) {
+  const dark = shade(color, 0.7);
+  g.save(); g.translate(x, y);
+  g.rotate(Math.sin(wobble) * 0.1);
+  g.fillStyle = color; g.strokeStyle = dark; g.lineWidth = 2.2;
+  g.beginPath(); g.arc(0, 0, WORKER.r, 0, Math.PI * 2); g.fill(); g.stroke();
+  g.fillStyle = '#ffd93d';
+  g.beginPath(); g.arc(0, -WORKER.r * 0.45, WORKER.r * 0.85, Math.PI, 0); g.closePath(); g.fill(); g.stroke();
+  g.fillStyle = '#3a2038';
+  g.beginPath(); g.arc(-3.4, 1, 1.8, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.arc(3.4, 1, 1.8, 0, Math.PI * 2); g.fill();
+  if (carrying) {
+    g.font = '12px sans-serif'; g.textAlign = 'center';
+    g.fillText('🍬', 0, -WORKER.r - 6);
+  }
+  if (hp < WORKER.hp) {
+    const frac = hp / WORKER.hp;
+    g.fillStyle = 'rgba(74,37,69,.3)'; rr(g, -9, -WORKER.r - 16, 18, 3, 2); g.fill();
+    g.fillStyle = frac > 0.4 ? '#6bcf7f' : '#ff4d6d';
+    rr(g, -9, -WORKER.r - 16, Math.max(2, 18 * frac), 3, 2); g.fill();
   }
   g.restore();
 }
@@ -498,8 +759,33 @@ function drawFx(g, fx, now) {
   }
 }
 
-/* fit-the-whole-world zoom for a given canvas */
 function fitZoom(w, h) { return Math.min(w, h) / (WORLD_R * 2.15); }
+
+/* render one full frame of world state onto a prepared canvas.
+   `view` = {buildings:[[id,seat,typeIdx,x,y,hp,prog,q]], mines:[stock],
+             players:[[seat,candy,castleHp,elim,...]], drawUnit(cb)} */
+function drawScene(g, world, seats, view, now) {
+  drawTerrain(g, world, seats, now);
+  for (let i = 0; i < world.mines.length; i++) {
+    drawMine(g, world.mines[i].x, world.mines[i].y, view.mines[i], world.mines[i].max);
+  }
+  for (const b of view.buildings) {
+    const s = seats[b[1]];
+    const type = TYPE_IDX[b[2]];
+    if (type === 'castle') continue;   // castles drawn below with nameplates
+    drawBuilding(g, type, b[3], b[4], s ? s.color : '#ccc', b[5], BLD[type].hp, b[6] / 100);
+  }
+  for (const p of view.players) {
+    const s = seats[p[0]];
+    const home = world.arms[p[0]].base;
+    drawCastle(g, home.x, home.y, s ? s.color : '#ccc', p[2], !!p[3], s && s.name, s && s.avatar);
+  }
+  view.eachUnit((id, seat, kind, x, y, hp, carry) => {
+    const s = seats[seat];
+    if (kind === 0) drawWorker(g, x, y, s.color, hp, !!carry, now * 0.012 + id);
+    else drawGuard(g, x, y, s.color, hp, now * 0.012 + id);
+  });
+}
 
 /* ================= HOST (big screen) ================= */
 
@@ -522,12 +808,12 @@ const HOST_HTML = `
 
 function createHost(ctx) {
   let sim = null;
-  let seats = [];               // seat → {id, name, avatar, color}
-  let seatByPlayer = new Map(); // playerId → seat
+  let seats = [];
+  let seatByPlayer = new Map();
   let tickTimer = null;
   let raf = 0;
   let lastTickAt = 0;
-  let fxLive = [];              // {t,x,y,t0}
+  let fxLive = [];
   let cam = { x: 0, y: 0, z: 0.4, tx: 0, ty: 0, tz: 0.4 };
   let canvas, g;
   let dragging = null;
@@ -550,12 +836,11 @@ function createHost(ctx) {
       canvas.width = canvas.clientWidth * devicePixelRatio;
       canvas.height = canvas.clientHeight * devicePixelRatio;
       cam.tz = fitZoom(canvas.width, canvas.height);
-      if (!lastTickAt) { cam.z = cam.tz; }
+      if (!lastTickAt) cam.z = cam.tz;
     };
     window.addEventListener('resize', resizeHandler);
     resizeHandler();
 
-    /* camera input */
     canvas.addEventListener('mousedown', (e) => { dragging = { x: e.clientX, y: e.clientY }; });
     window.addEventListener('mouseup', () => { dragging = null; });
     window.addEventListener('mousemove', (e) => {
@@ -586,7 +871,6 @@ function createHost(ctx) {
     };
     window.addEventListener('keydown', keyHandler);
 
-    /* the heartbeat */
     lastTickAt = performance.now();
     tickTimer = setInterval(onTick, TICK_MS);
     raf = requestAnimationFrame(render);
@@ -597,7 +881,7 @@ function createHost(ctx) {
     lastTickAt = performance.now();
     for (const f of sim.fx) fxLive.push({ ...f, t0: lastTickAt });
     if (sim.tick % SNAP_EVERY === 0 || sim.over) {
-      const snap = snapshot(sim);   // drains sim.fx
+      const snap = snapshot(sim);
       for (const s of seats) ctx.sendTo(s.id, snap);
       if (snap.elim) toastElim(snap.elim);
       updateBanners();
@@ -612,7 +896,11 @@ function createHost(ctx) {
     ctx.sendTo(playerId, {
       k: 'init', seat, n: sim.world.n,
       seats: seats.map((s) => ({ seat: s.seat, name: s.name, avatar: s.avatar, color: s.color })),
-      cfg: { cost: GUARD.cost, thrMin: THR_MIN, thrMax: THR_MAX, castleHp: CASTLE_HP },
+      cfg: {
+        worker: WORKER.cost, guard: GUARD.cost,
+        bakery: BLD.bakery.cost, shack: BLD.shack.cost, camp: BLD.camp.cost,
+        thrMin: THR_MIN, thrMax: THR_MAX,
+      },
     });
   }
 
@@ -620,7 +908,12 @@ function createHost(ctx) {
     if (!sim || !data) return;
     const seat = seatByPlayer.get(playerId);
     if (seat === undefined) return;
-    if (data.k === 'recruit') recruitGuard(sim, seat);
+    if (data.k === 'train') train(sim, seat, data.unit === 'worker' ? 'worker' : 'guard');
+    else if (data.k === 'build') {
+      if (typeof data.x === 'number' && typeof data.y === 'number' && BLD[data.type]) {
+        build(sim, seat, data.type, data.x, data.y);
+      }
+    }
     else if (data.k === 'send') setSend(sim, seat, data.on, data.thr);
     else if (data.k === 'target') setTarget(sim, seat, typeof data.seat === 'number' ? data.seat : -1);
     else if (data.k === 'need-init') sendInit(playerId);
@@ -644,7 +937,7 @@ function createHost(ctx) {
       if (!el) continue;
       el.classList.toggle('ck-elim', p.elim);
       el.querySelector('.ck-b-candy').textContent = Math.floor(p.candy);
-      el.querySelector('.ck-b-hp').style.width = Math.max(0, (p.castleHp / CASTLE_HP) * 100) + '%';
+      el.querySelector('.ck-b-hp').style.width = Math.max(0, (p.castleHp / CASTLE.hp) * 100) + '%';
     }
   }
 
@@ -669,7 +962,6 @@ function createHost(ctx) {
     el.classList.remove('hidden');
   }
 
-  /* ---------- render loop ---------- */
   function clampCam() {
     const m = WORLD_R * 1.1;
     cam.tx = Math.max(-m, Math.min(m, cam.tx));
@@ -678,7 +970,7 @@ function createHost(ctx) {
 
   function render(now) {
     raf = requestAnimationFrame(render);
-    if (!g) return;
+    if (!g || !sim) return;
     cam.x += (cam.tx - cam.x) * 0.12;
     cam.y += (cam.ty - cam.y) * 0.12;
     cam.z += (cam.tz - cam.z) * 0.12;
@@ -689,18 +981,19 @@ function createHost(ctx) {
     g.scale(cam.z, cam.z);
     g.translate(-cam.x, -cam.y);
 
-    drawTerrain(g, sim.world, seats, now);
-    for (const s of seats) {
-      const p = sim.players[s.seat];
-      const b = sim.world.arms[s.seat].base;
-      drawCastle(g, b.x, b.y, s.color, p.castleHp, p.elim, s.name, s.avatar);
-    }
     const alpha = Math.max(0, Math.min(1, (now - lastTickAt) / TICK_MS));
-    for (const u of sim.units) {
-      const x = u.px + (u.x - u.px) * alpha;
-      const y = u.py + (u.y - u.py) * alpha;
-      drawGuard(g, x, y, seats[u.seat].color, u.hp, now * 0.012 + u.id);
-    }
+    drawScene(g, sim.world, seats, {
+      mines: sim.mines,
+      buildings: sim.buildings.map((b) => [b.id, b.seat, TYPE_IDX.indexOf(b.type), b.x, b.y, b.hp, Math.round(b.prog * 100), b.queue.length]),
+      players: sim.players.map((p) => [p.seat, 0, p.castleHp, p.elim ? 1 : 0]),
+      eachUnit: (cb) => {
+        for (const u of sim.units) {
+          const x = u.px + (u.x - u.px) * alpha;
+          const y = u.py + (u.y - u.py) * alpha;
+          cb(u.id, u.seat, u.kind === 'worker' ? 0 : 1, x, y, u.hp, u.carry > 0 ? 1 : 0);
+        }
+      },
+    }, now);
     fxLive = fxLive.filter((f) => now - f.t0 < 950);
     drawFx(g, fxLive, now);
   }
@@ -726,13 +1019,23 @@ const CTRL_HTML = `
   <div class="ck-ctrl-map">
     <canvas class="ck-ctrl-canvas"></canvas>
     <div class="ck-ctrl-maphint">Drag to look · pinch to zoom</div>
+    <div class="ck-place-hint hidden">Tap the map to place <b class="ck-place-what"></b> · <button class="ck-place-cancel">Cancel</button></div>
   </div>
   <div class="ck-panel">
     <div class="ck-row ck-row-top">
       <div class="ck-candy">🍬 <b class="ck-candy-n">0</b></div>
-      <div class="ck-armysize">⚔️ <b class="ck-army-n">0</b> mustered</div>
+      <div class="ck-supply">🏠 <b class="ck-sup-n">0/6</b></div>
+      <div class="ck-armysize">⚔️ <b class="ck-army-n">0</b> ready</div>
     </div>
-    <button class="ck-recruit">Recruit gingerbread guard <span class="ck-cost"></span></button>
+    <div class="ck-train-row">
+      <button class="ck-train" data-unit="worker">🧑‍🔧 Helper <span class="ck-price ck-price-worker"></span><span class="ck-q ck-q-worker hidden"></span></button>
+      <button class="ck-train" data-unit="guard">🍪 Guard <span class="ck-price ck-price-guard"></span><span class="ck-q ck-q-guard hidden"></span></button>
+    </div>
+    <div class="ck-build-row">
+      <button class="ck-build" data-type="bakery">🍪<span>Bakery</span><span class="ck-price ck-price-bakery"></span></button>
+      <button class="ck-build" data-type="shack">🍭<span>Sugar Shack</span><span class="ck-price ck-price-shack"></span></button>
+      <button class="ck-build" data-type="camp">⛺<span>Candy Camp</span><span class="ck-price ck-price-camp"></span></button>
+    </div>
     <div class="ck-sendbox">
       <label class="ck-sendrow">
         <span class="ck-sendlabel">Send armies</span>
@@ -761,13 +1064,15 @@ const CTRL_HTML = `
 
 function createController(ctx) {
   let world = null, mySeat = -1, seats = [], cfg = null;
-  let prev = null, cur = null;        // last two snapshots + arrival times
+  let prev = null, cur = null;
   let fxLive = [];
-  let cam = { x: 0, y: 0, z: 0.5 };
+  let cam = { x: 0, y: 0, z: 0.5, min: 0.1 };
   let canvas, g, raf = 0;
-  let me = null;                       // my row from the latest snapshot
+  let me = null;
   let syncTimer = null;
   let touch = null;
+  let placing = null;              // building type while in placement mode
+  let ghost = null;                // {x, y} world coords of the ghost
 
   function start() {
     ctx.root.innerHTML = CTRL_HTML;
@@ -776,7 +1081,6 @@ function createController(ctx) {
     bindPanel();
     bindTouch();
     ctx.send({ k: 'need-init' });
-    // if init hasn't landed in a couple seconds, nudge again (reconnects)
     syncTimer = setInterval(() => { if (!world) ctx.send({ k: 'need-init' }); }, 2000);
     raf = requestAnimationFrame(render);
   }
@@ -789,9 +1093,12 @@ function createController(ctx) {
       seats = data.seats;
       cfg = data.cfg;
       ctx.root.querySelector('.ck-ctrl-wait').classList.add('hidden');
-      ctx.root.querySelector('.ck-cost').textContent = `(${cfg.cost} 🍬)`;
+      for (const key of ['worker', 'guard', 'bakery', 'shack', 'camp']) {
+        const el = ctx.root.querySelector('.ck-price-' + key);
+        if (el) el.textContent = cfg[key] + '🍬';
+      }
       const b = world.arms[mySeat].base;
-      cam.x = b.x * 0.82; cam.y = b.y * 0.82;
+      cam.x = b.x * 0.86; cam.y = b.y * 0.86;
       sizeCanvas();
       renderTargets();
       return;
@@ -815,15 +1122,35 @@ function createController(ctx) {
   /* ---------- panel ---------- */
   function bindPanel() {
     const r = ctx.root;
-    r.querySelector('.ck-recruit').addEventListener('click', () => ctx.send({ k: 'recruit' }));
+    r.querySelectorAll('.ck-train').forEach((btn) => {
+      btn.addEventListener('click', () => ctx.send({ k: 'train', unit: btn.dataset.unit }));
+    });
+    r.querySelectorAll('.ck-build').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (placing === btn.dataset.type) stopPlacing();
+        else startPlacing(btn.dataset.type);
+      });
+    });
+    r.querySelector('.ck-place-cancel').addEventListener('click', stopPlacing);
     const toggle = r.querySelector('.ck-send-toggle');
     const thr = r.querySelector('.ck-thr');
     const pushSend = () => ctx.send({ k: 'send', on: toggle.checked, thr: parseInt(thr.value, 10) });
     toggle.addEventListener('change', pushSend);
-    thr.addEventListener('input', () => {
-      r.querySelector('.ck-thr-n').textContent = thr.value;
-    });
+    thr.addEventListener('input', () => { r.querySelector('.ck-thr-n').textContent = thr.value; });
     thr.addEventListener('change', pushSend);
+  }
+
+  function startPlacing(type) {
+    placing = type; ghost = null;
+    const r = ctx.root;
+    r.querySelectorAll('.ck-build').forEach((b) => b.classList.toggle('is-on', b.dataset.type === type));
+    r.querySelector('.ck-place-what').textContent = BLD[type].label;
+    r.querySelector('.ck-place-hint').classList.remove('hidden');
+  }
+  function stopPlacing() {
+    placing = null; ghost = null;
+    ctx.root.querySelectorAll('.ck-build').forEach((b) => b.classList.remove('is-on'));
+    ctx.root.querySelector('.ck-place-hint').classList.add('hidden');
   }
 
   function renderTargets() {
@@ -845,23 +1172,42 @@ function createController(ctx) {
     if (!me) return;
     const r = ctx.root;
     r.querySelector('.ck-candy-n').textContent = me[1];
-    const mustered = snap.u.filter((u) => u[1] === mySeat).length; // all my troops (phase 1: close enough for the counter)
-    r.querySelector('.ck-army-n').textContent = mustered;
-    r.querySelector('.ck-recruit').disabled = !!me[3] || (cfg && me[1] < cfg.cost);
+    r.querySelector('.ck-sup-n').textContent = me[7] + '/' + me[8];
+    r.querySelector('.ck-army-n').textContent = me[9];
+
+    const myBld = snap.b.filter((b) => b[1] === mySeat);
+    const hasBakery = myBld.some((b) => TYPE_IDX[b[2]] === 'bakery' && b[6] >= 100);
+    const supFull = me[7] >= me[8];
+    const wq = myBld.filter((b) => TYPE_IDX[b[2]] === 'castle').reduce((s, b) => s + b[7], 0);
+    const gq = myBld.filter((b) => TYPE_IDX[b[2]] === 'bakery').reduce((s, b) => s + b[7], 0);
+    setQ('.ck-q-worker', wq); setQ('.ck-q-guard', gq);
+
+    r.querySelector('.ck-train[data-unit="worker"]').disabled = !!me[3] || me[1] < cfg.worker || supFull;
+    const gbtn = r.querySelector('.ck-train[data-unit="guard"]');
+    gbtn.disabled = !!me[3] || !hasBakery || me[1] < cfg.guard || supFull;
+    gbtn.title = hasBakery ? '' : 'Build a Bakery first!';
+    r.querySelectorAll('.ck-build').forEach((btn) => {
+      btn.disabled = !!me[3] || me[1] < cfg[btn.dataset.type];
+    });
+
     const toggle = r.querySelector('.ck-send-toggle');
     if (toggle !== document.activeElement) toggle.checked = !!me[4];
-    /* reflect the authoritative target */
     r.querySelectorAll('.ck-target').forEach((btn) => {
       btn.classList.toggle('is-on', parseInt(btn.dataset.seat, 10) === me[6]);
     });
-    /* eliminated seats can't be targeted */
     for (const p of snap.pl) {
       if (p[3]) {
         const btn = r.querySelector(`.ck-target[data-seat="${p[0]}"]`);
         if (btn) btn.disabled = true;
       }
     }
-    if (me[3]) r.querySelector('.ck-ctrl-out').classList.remove('hidden');
+    if (me[3]) { stopPlacing(); r.querySelector('.ck-ctrl-out').classList.remove('hidden'); }
+
+    function setQ(sel, n) {
+      const el = r.querySelector(sel);
+      el.textContent = '×' + n;
+      el.classList.toggle('hidden', n === 0);
+    }
   }
 
   function showOver(winner) {
@@ -886,11 +1232,45 @@ function createController(ctx) {
     }
   }
 
+  function screenToWorld(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    const px = (clientX - rect.left) * devicePixelRatio;
+    const py = (clientY - rect.top) * devicePixelRatio;
+    return {
+      x: (px - canvas.width / 2) / cam.z + cam.x,
+      y: (py - canvas.height / 2) / cam.z + cam.y,
+    };
+  }
+
+  function tryPlace(clientX, clientY) {
+    if (!placing || !cur) return;
+    const pt = screenToWorld(clientX, clientY);
+    ghost = pt;
+    if (ghostValid()) {
+      ctx.send({ k: 'build', type: placing, x: Math.round(pt.x), y: Math.round(pt.y) });
+      stopPlacing();
+    } else {
+      const hint = ctx.root.querySelector('.ck-place-hint');
+      hint.classList.add('ck-shake');
+      setTimeout(() => hint.classList.remove('ck-shake'), 400);
+    }
+  }
+
+  function ghostValid() {
+    if (!ghost || !placing || !cur) return false;
+    const snap = cur.snap;
+    const buildings = snap.b.map((b) => ({ seat: b[1], type: TYPE_IDX[b[2]], x: b[3], y: b[4] }));
+    const units = snap.u.map((u) => ({ seat: u[1], x: u[3], y: u[4] }));
+    return canPlace(world, buildings, units, mySeat, placing, ghost.x, ghost.y);
+  }
+
   function bindTouch() {
     const el = canvas;
     el.addEventListener('touchstart', (e) => {
       if (e.touches.length === 1) {
-        touch = { mode: 'pan', x: e.touches[0].clientX, y: e.touches[0].clientY };
+        touch = { mode: 'pan', x: e.touches[0].clientX, y: e.touches[0].clientY,
+                  x0: e.touches[0].clientX, y0: e.touches[0].clientY, moved: 0 };
+        if (placing) ghost = screenToWorld(touch.x, touch.y);
       } else if (e.touches.length === 2) {
         touch = { mode: 'zoom', d: tdist(e), z: cam.z };
       }
@@ -900,26 +1280,39 @@ function createController(ctx) {
       if (touch.mode === 'pan' && e.touches.length === 1) {
         const dx = (e.touches[0].clientX - touch.x) * devicePixelRatio;
         const dy = (e.touches[0].clientY - touch.y) * devicePixelRatio;
+        touch.moved += Math.abs(dx) + Math.abs(dy);
         touch.x = e.touches[0].clientX; touch.y = e.touches[0].clientY;
         cam.x -= dx / cam.z; cam.y -= dy / cam.z;
         const m = WORLD_R * 1.1;
         cam.x = Math.max(-m, Math.min(m, cam.x));
         cam.y = Math.max(-m, Math.min(m, cam.y));
+        if (placing) ghost = screenToWorld(touch.x, touch.y);
       } else if (touch.mode === 'zoom' && e.touches.length === 2) {
         const d = tdist(e);
         cam.z = Math.max(cam.min || 0.1, Math.min(3, touch.z * (d / touch.d)));
       }
     }, { passive: true });
-    el.addEventListener('touchend', () => { touch = null; }, { passive: true });
-    /* mouse fallback for testing in a desktop browser */
+    el.addEventListener('touchend', (e) => {
+      if (touch && touch.mode === 'pan' && touch.moved < 14 && placing) {
+        tryPlace(touch.x, touch.y);
+      }
+      touch = null;
+    }, { passive: true });
+
+    /* mouse fallback for desktop testing */
     let mdrag = null;
-    el.addEventListener('mousedown', (e) => { mdrag = { x: e.clientX, y: e.clientY }; });
-    window.addEventListener('mouseup', () => { mdrag = null; });
-    window.addEventListener('mousemove', (e) => {
+    el.addEventListener('mousedown', (e) => { mdrag = { x: e.clientX, y: e.clientY, moved: 0 }; });
+    el.addEventListener('mousemove', (e) => {
+      if (placing) ghost = screenToWorld(e.clientX, e.clientY);
       if (!mdrag) return;
+      mdrag.moved += Math.abs(e.clientX - mdrag.x) + Math.abs(e.clientY - mdrag.y);
       cam.x -= ((e.clientX - mdrag.x) * devicePixelRatio) / cam.z;
       cam.y -= ((e.clientY - mdrag.y) * devicePixelRatio) / cam.z;
-      mdrag = { x: e.clientX, y: e.clientY };
+      mdrag.x = e.clientX; mdrag.y = e.clientY;
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (mdrag && mdrag.moved < 10 && placing) tryPlace(e.clientX, e.clientY);
+      mdrag = null;
     });
     window.addEventListener('resize', sizeCanvas);
   }
@@ -937,24 +1330,35 @@ function createController(ctx) {
     g.scale(cam.z, cam.z);
     g.translate(-cam.x, -cam.y);
 
-    drawTerrain(g, world, seats, now);
-    for (const p of cur.snap.pl) {
-      const s = seats.find((q) => q.seat === p[0]);
-      const b = world.arms[p[0]].base;
-      drawCastle(g, b.x, b.y, s.color, p[2], !!p[3], s.name, s.avatar);
-    }
-
-    /* interpolate units between the last two snapshots */
     let alpha = 1;
     if (prev) alpha = Math.max(0, Math.min(1, (now - cur.at) / (cur.at - prev.at || TICK_MS * SNAP_EVERY)));
     const prevById = new Map(prev ? prev.snap.u.map((u) => [u[0], u]) : []);
-    for (const u of cur.snap.u) {
-      const p0 = prevById.get(u[0]);
-      const x = p0 ? p0[2] + (u[2] - p0[2]) * alpha : u[2];
-      const y = p0 ? p0[3] + (u[3] - p0[3]) * alpha : u[3];
-      const s = seats.find((q) => q.seat === u[1]);
-      drawGuard(g, x, y, s.color, u[4], now * 0.012 + u[0]);
+    drawScene(g, world, seats, {
+      mines: cur.snap.m,
+      buildings: cur.snap.b,
+      players: cur.snap.pl,
+      eachUnit: (cb) => {
+        for (const u of cur.snap.u) {
+          const p0 = prevById.get(u[0]);
+          const x = p0 ? p0[3] + (u[3] - p0[3]) * alpha : u[3];
+          const y = p0 ? p0[4] + (u[4] - p0[4]) * alpha : u[4];
+          cb(u[0], u[1], u[2], x, y, u[5], u[6]);
+        }
+      },
+    }, now);
+
+    if (placing && ghost) {
+      const s = seats[mySeat];
+      const ok = ghostValid();
+      g.globalAlpha = 0.65;
+      drawBuilding(g, placing, ghost.x, ghost.y, s.color, BLD[placing].hp, BLD[placing].hp, 1);
+      g.globalAlpha = 1;
+      g.lineWidth = 4; g.strokeStyle = ok ? '#6bcf7f' : '#ff4d6d';
+      g.setLineDash([10, 8]);
+      g.beginPath(); g.arc(ghost.x, ghost.y, BLD[placing].r + 16, 0, Math.PI * 2); g.stroke();
+      g.setLineDash([]);
     }
+
     fxLive = fxLive.filter((f) => now - f.t0 < 950);
     drawFx(g, fxLive, now);
   }
@@ -973,7 +1377,7 @@ function createController(ctx) {
 export default {
   id: 'candykingdoms',
   title: 'Candy Kingdoms',
-  tagline: 'Build an army, storm the arena, crumble their castles',
+  tagline: 'Harvest candy, raise an army, crumble their castles',
   emoji: '🏰',
   minPlayers: 2,
   maxPlayers: 6,
@@ -983,4 +1387,8 @@ export default {
 };
 
 /* headless testing hooks — not used by the app itself */
-export const __sim = { buildWorld, makeSim, stepSim, recruitGuard, setSend, setTarget, snapshot, GUARD, CASTLE_HP, TICK_MS };
+export const __sim = {
+  buildWorld, makeSim, stepSim, train, build, canPlace, setSend, setTarget, snapshot,
+  supplyCap, supplyUsed,
+  WORKER, GUARD, BLD, CASTLE, MINE, SUPPLY_BASE, SUPPLY_PER_SHACK, START_CANDY, START_WORKERS, TICK_MS,
+};
