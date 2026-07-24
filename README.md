@@ -31,28 +31,32 @@ js/games/topbanana.js   Apples-to-Apples-style judging game
 js/games/sweetpath.js   Sweet Path candy board race
 js/games/gumdropguardians.js  Gumdrop Guardians 🛡️ (1-6 players)
 
-A co-op candy MOBA, fully real time. The team's Gingerbread Castle sits in one
-corner of a big widescreen map; the horde's Rock Candy Cavern glowers from the
-other. Every 20 seconds BOTH bases send a group of 10 fighters marching down
-the three lanes — they meet in the middle and brawl. Destroy the cavern to win
-before the horde flattens the castle.
+A candy MOBA for the living room — play it co-op against the AI horde, or
+split into teams and go head to head. At the hero-select screen every player
+picks a SIDE (🍬 Gummi Kingdom or 👹 Rock Candy Horde) and a hero; destroy the
+other team's base to win.
 
-Standing in your way: two enemy towers per lane (huge health, and hits hard
-enough to fell the tankiest knight in about 8 swats), enemy heroes like the
-Sour Sergeant and Licorice Sniper who arrive on a schedule, and an endless
-tide of creeps that grows meaner every minute.
+The war is perfectly fair. Every 20 seconds both bases march an IDENTICAL
+group of 10 down the three lanes — same classes, same stats, different
+costumes (Gummy Bruisers vs Choco Chompers, Bonbon Bees vs Wafer Wasps,
+Jawbreaker Brutes vs Gumdrop Golems...). Both sides own 10 towers: two per
+lane plus a ring of four guarding the base, each hitting hard enough to fell
+the tankiest knight in about 8 swats — so there's no sprinting past the army
+to backdoor the enemy keep, and defenders chase invading heroes relentlessly
+anywhere near their home base. Any side with no human players gets AI
+champions (the Sour Sergeant, Licorice Sniper, and Rock Candy Colossus — or
+their gummi counterparts) marching on a schedule, so solo-vs-horde still
+works beautifully.
 
-The wilds between the lanes are shaped by rock ridges and tree thickets that
-block travel (never sealing anything off — there's always a way around), and
-dotted with neutral creep camps. Taffy Wolves, Brittle Bears, and the Elder
-Rockjaw guard their clearings fiercely; clearing a camp pays coins and levels
-your hero up. Heroes grow two ways: LEVELS earned through kills and battle
-performance, and GEAR bought from the 🎒 shop on your phone — the Lollipop
-Blade, Gumdrop Plate, Zoom-Zoom Boots, and Star Charm, each upgradeable
-through eight tiers. Towers can still be built anywhere the team has scouted
-(fog of war hides the unexplored map), any time, mid-fight.
+Between the lanes: rock ridges and tree thickets that block travel (never
+sealing anything off), and eight neutral camps — Taffy Wolves, Brittle Bears,
+and the Elder Rockjaw — that pay coins and hero XP when cleared. Heroes grow
+through battle-earned LEVELS and purchasable GEAR (Lollipop Blade, Gumdrop
+Plate, Zoom-Zoom Boots, Star Charm, tiers I-VIII), all from the 🎒 shop on
+your phone, mid-fight, no pauses. Player-built ground artillery even lays
+siege to enemy towers and bases when no creeps are in range.
 
-Phones are full controllers: joystick + three hero powers, a live mini-view of
+Phones are full controllers: joystick, three hero powers, a snug live view of
 your hero, and the shop overlay for gear, building, and tower upgrades.
 
 ## Games
