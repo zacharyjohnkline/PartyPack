@@ -46,12 +46,26 @@ Rival heroes genuinely fight: auto-attacks, abilities, meteors, and syrup all
 work on the other team's players, and takedowns pay coins + XP by level.
 
 The war is perfectly fair — every 20 seconds both bases march an IDENTICAL
-group of 10 (same classes, different costumes), and creep waves actively hunt
-the other side's towers. Each army owns 12 towers: two per lane plus a ring
-of six around the base covering front AND rear — and they hit hard enough to
-fell the tankiest melee hero in about 5 zaps, so nobody tanks a tower dive
-for free. Defenders chase invading heroes relentlessly near their home base.
-Sides with no human players get AI champions on a schedule.
+group of 10 (same classes, different costumes). Creep waves attack enemy
+towers along their path as first-class targets, and every creep survives
+exactly 4 tower zaps no matter how big it is. Each army owns 12 towers (two
+per lane, a ring of six around the base, front AND rear) — but downed towers
+aren't destroyed, they're CAPTURED: they switch sides at half health and
+immediately fight for their new owners. Towers fell a fresh level-1 hero in
+4 zaps, stretching to 10 zaps at level 10. And each base is SHIELDED while
+any of its six ring guards still fly its flag — no bum-rushing the enemy
+keep; the ring must be dismantled (captured!) first. Player-built structures
+are formidable too: triple health, and turrets & mortars open fire on rival
+heroes.
+
+Teams always come out EQUAL: if the sides are uneven (3v1, or a lone player
+vs nobody), robot players — Robo Rollo, Auto Aggie, Circuit Cindy and friends —
+fill the empty chairs the moment the match starts. Bots are real players
+under identical rules: they pick a hero from their side's roster, earn coins
+and XP, buy and upgrade the same gear, cast abilities on the same cooldowns,
+build fortifications (the builder types especially), push lanes, dismantle
+towers, retreat to heal, and respawn like anyone else. They appear on the
+roster with 🤖 badges.
 
 The wilds are now a proper FOREST: hundreds of tree thickets and rock ridges
 carve real routes between the lanes, and the entire map rim is tree-walled —

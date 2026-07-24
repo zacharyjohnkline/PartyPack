@@ -43,8 +43,12 @@ const TIME_SCALE = 0.08;           // enemy hp/dmg +8% per minute
 const FOUNTAIN_R = 300;            // heroes heal fast near their own castle
 const COIN_TRICKLE = 1;            // passive coins per second per player
 
-/* lane towers — brutal: ~8 hits fells even the tankiest hero. BOTH sides get them */
+/* lane towers — every creep dies in exactly 4 zaps; heroes take 4 zaps at
+   level 1, stretching to 10 zaps by level 10. Downed towers are CAPTURED. */
 const ETOWER = { hp: 2600, dmg: 160, range: 270, cd: 15, r: 34, coin: 120, xp: 150 };
+const towerDmgVsCreep = (u) => Math.ceil(u.maxhp * 0.25);
+const towerDmgVsHero = (p) => Math.ceil(p.maxhp / (4 + (p.lvl - 1) * (6 / 9)));
+const CAPTURE_HP = 0.5;            // a freshly captured tower stands back up at half health
 const ETOWER_AT = [0.45, 0.22];    // fractions along each lane, measured from the owner's base
 const BASE_RING = [[350, 60], [60, 350], [290, 290], [150, 150],
                    [-250, -40], [-40, -250]];   // guard towers hugging each base — REAR covered too
@@ -151,17 +155,17 @@ const XP_SHARE_R = 520;                                          // nearby allie
 
 /* the tower catalog — different tools for different jobs */
 const BLD = {
-  turret:   { label: 'Gumball Turret',   emoji: '🍬', cost: 60,  hp: 220, range: 175, dmg: 8,  cd: 8,
-              r: 26, desc: 'Rapid fire vs GROUND enemies' },
-  launcher: { label: 'Licorice Launcher', emoji: '🚀', cost: 70,  hp: 200, range: 230, dmg: 15, cd: 10,
+  turret:   { label: 'Gumball Turret',   emoji: '🍬', cost: 60,  hp: 660, range: 175, dmg: 8,  cd: 8,
+              r: 26, desc: 'Rapid fire vs ground foes — heroes included' },
+  launcher: { label: 'Licorice Launcher', emoji: '🚀', cost: 70,  hp: 600, range: 230, dmg: 15, cd: 10,
               r: 26, air: true, desc: 'Shoots FLYING enemies only' },
-  mortar:   { label: 'Marshmallow Mortar', emoji: '💣', cost: 90,  hp: 240, range: 340, minRange: 130,
-              dmg: 18, cd: 25, splash: 75, r: 28, desc: 'Long-range splash vs GROUND — not up close' },
-  syrup:    { label: 'Syrup Sprayer',    emoji: '🍯', cost: 50,  hp: 180, range: 140, cd: 5,
+  mortar:   { label: 'Marshmallow Mortar', emoji: '💣', cost: 90,  hp: 720, range: 340, minRange: 130,
+              dmg: 18, cd: 25, splash: 75, r: 28, desc: 'Long-range splash vs ground — heroes included' },
+  syrup:    { label: 'Syrup Sprayer',    emoji: '🍯', cost: 50,  hp: 540, range: 140, cd: 5,
               r: 24, slow: 0.45, desc: 'No damage — slows every enemy nearby' },
-  barracks: { label: 'Gummy Barracks',   emoji: '🏕️', cost: 110, hp: 320, r: 32, squad: 3, respawn: 60,
+  barracks: { label: 'Gummy Barracks',   emoji: '🏕️', cost: 110, hp: 960, r: 32, squad: 3, respawn: 60,
               desc: 'Trains 3 gummy fighters that guard it' },
-  wall:     { label: 'Gumdrop Wall',     emoji: '🧱', cost: 0,   hp: 400, r: 30, lure: 320, temp: 300,
+  wall:     { label: 'Gumdrop Wall',     emoji: '🧱', cost: 0,   hp: 1200, r: 30, lure: 320, temp: 300,
               desc: 'Decoy — enemies rush to chew on it' },
 };
 const BTYPE = ['turret', 'launcher', 'mortar', 'syrup', 'barracks', 'wall'];
@@ -230,6 +234,11 @@ const EHERO_FIRST = 900, EHERO_EVERY = 1000;  // AI heroes bolster any side with
 const KILLER_BONUS = 0.5;                     // owner of the killer earns +50% coins
 const TEAM_NAME = ['Gummi Kingdom', 'Rock Candy Horde'];
 const TEAM_EMOJI = ['🍬', '👹'];
+
+/* AI teammates/opponents — real players with a robot brain: they level,
+   shop, build, cast, retreat, and respawn under exactly the same rules */
+const BOT_NAMES = ['Robo Rollo', 'Auto Aggie', 'Circuit Cindy', 'Gear-o Greg', 'Beep-Beep Bonnie', 'Sprocket Sam', 'Motor Mabel', 'Widget Wally'];
+const BOT_COLORS = ['#9aa5b1', '#b58fd6', '#7fc8a9', '#e0a76f', '#d98fb0', '#8fb7e0', '#c9c46a', '#a08fe0'];
 
 /* neutral creep camps — clear them for XP and coins; they respawn */
 const NTYPES = {
@@ -581,8 +590,8 @@ function makeSim(seed) {
     over: null,                        // 0 | 1 → winning team
     stats: { built: 0, towersDown: [0, 0] },
   };
-  for (const t of sim.world.etowers) sim.etowers.push({ id: sim.nextId++, ...t, hp: ETOWER.hp, maxhp: ETOWER.hp, cd: 0 });
-  for (const t of sim.world.ptowers) sim.ptowers.push({ id: sim.nextId++, ...t, hp: ETOWER.hp, maxhp: ETOWER.hp, cd: 0 });
+  for (const t of sim.world.etowers) sim.etowers.push({ id: sim.nextId++, ...t, ring: t.lane === -1, hp: ETOWER.hp, maxhp: ETOWER.hp, cd: 0 });
+  for (const t of sim.world.ptowers) sim.ptowers.push({ id: sim.nextId++, ...t, ring: t.lane === -1, hp: ETOWER.hp, maxhp: ETOWER.hp, cd: 0 });
   for (const c of sim.world.camps) {
     const camp = { ...c, respawnT: 0, id: sim.nextId++ };
     sim.camps.push(camp);
@@ -668,8 +677,33 @@ function pickHero(sim, playerId, heroId, team) {
   }
 }
 
+function addBot(sim, team) {
+  const n = sim.botN = (sim.botN || 0);
+  const p = addPlayer(sim, 'bot-' + (n + 1));
+  sim.botN++;
+  p.bot = true;
+  p.botName = BOT_NAMES[n % BOT_NAMES.length];
+  p.botColor = BOT_COLORS[n % BOT_COLORS.length];
+  const roster = heroesOfTeam(team === 1 ? 1 : 0);
+  pickHero(sim, p.id, roster[n % roster.length].id, team);
+  return p;
+}
+
+/* uneven sides? robots fill every empty chair until the teams match */
+function balanceTeams(sim) {
+  const count = [0, 0];
+  for (const p of sim.players.values()) if (p.hero) count[p.team]++;
+  while (count[0] !== count[1]) {
+    const short = count[0] < count[1] ? 0 : 1;
+    addBot(sim, short);
+    count[short]++;
+  }
+}
+
 function startPlay(sim) {
+  if (sim.phase === 'play') return;
   sim.phase = 'play';
+  balanceTeams(sim);
   sim.spawnT = 30;
   addFx(sim, 'horn', HORDE.x, HORDE.y);
 }
@@ -854,7 +888,8 @@ function hurtNeutral(sim, n, dmg, owner) {
   }
 }
 
-/* a lane/ring tower of `team` took damage */
+/* a lane/ring tower of `team` took damage; at zero it DEFECTS to the
+   attackers — repainted, half health, and immediately fighting for them */
 function hurtTower(sim, tw, team, dmg, owner) {
   if (tw.hp <= 0) return;
   tw.hp -= dmg;
@@ -866,14 +901,26 @@ function hurtTower(sim, tw, team, dmg, owner) {
       if (p.hero && p.team === winners) p.coins += p.id === owner ? ETOWER.coin : Math.round(ETOWER.coin / 2);
     }
     if (owner) addXp(sim, owner, ETOWER.xp, tw.x, tw.y);
-    addFx(sim, 'crumble', tw.x, tw.y);
+    const from = towersOf(sim, team);
+    const i = from.indexOf(tw);
+    if (i >= 0) from.splice(i, 1);
+    tw.hp = Math.round(tw.maxhp * CAPTURE_HP);
+    tw.cd = 25;
+    towersOf(sim, winners).push(tw);
     addFx(sim, 'towerdown', tw.x, tw.y);
+    addFx(sim, 'built', tw.x, tw.y);
   }
+}
+
+/* a base is untouchable while ANY of its ring guards still fly its flag */
+function baseShielded(sim, team) {
+  return towersOf(sim, team).some((t) => t.ring);
 }
 const hurtETower = (sim, t, dmg, owner) => hurtTower(sim, t, 1, dmg, owner);
 
 /* the base of `team` took damage; destroying it means the OTHER team wins */
 function hurtBase(sim, team, dmg) {
+  if (baseShielded(sim, team)) { addFx(sim, 'shield', baseOf(team).x, baseOf(team).y); return; }
   const b = team === 0 ? sim.castle : sim.horde;
   b.hp -= dmg;
   b.hitAt = sim.tick;
@@ -1104,6 +1151,7 @@ function creepScan(sim, u) {
     for (const a of creepsOf(sim, opp)) consider('creep', a.id, a.x, a.y);
   }
   for (const b of sim.blds) if (b.team === opp) consider('bld', b.id, b.x, b.y, b.type === 'wall' ? BLD.wall.lure - def.aggro : 0);
+  for (const tw of towersOf(sim, opp)) consider('tower', tw.id, tw.x, tw.y, ETOWER.r);
   u.tgt = best;
 }
 
@@ -1112,6 +1160,10 @@ function tgtPos(sim, u, tgt) {
   if (tgt.kind === 'hero') { const p = sim.players.get(tgt.id); return p && !p.dead ? p : null; }
   if (tgt.kind === 'creep') return creepsOf(sim, 1 - u.team).find((a) => a.id === tgt.id) || null;
   if (tgt.kind === 'bld') return sim.blds.find((b) => b.id === tgt.id) || null;
+  if (tgt.kind === 'tower') {
+    const tw = towersOf(sim, 1 - u.team).find((t) => t.id === tgt.id);
+    return tw || null;                  /* null after a capture flips it to our side */
+  }
   return null;
 }
 
@@ -1165,7 +1217,7 @@ function stepCreep(sim, u) {
   if (sim.tick % 5 === (u.id % 5)) creepScan(sim, u);
   const t = tgtPos(sim, u, u.tgt);
   if (t) {
-    const tr = t.type && BLD[t.type] ? BLD[t.type].r : 16;
+    const tr = u.tgt.kind === 'tower' ? ETOWER.r : (t.type && BLD[t.type] ? BLD[t.type].r : 16);
     const d = dist(u.x, u.y, t.x, t.y);
     const lureR = (u.tgt.kind === 'bld' && t.type === 'wall') ? BLD.wall.lure : def.aggro;
     /* home-turf fury: while an enemy HERO prowls near our base, never give up the chase */
@@ -1182,6 +1234,7 @@ function stepCreep(sim, u) {
         addFx(sim, 'hit', t.x, t.y);
         if (u.tgt.kind === 'hero') hitHeroFrom(sim, t, u.dmg);
         else if (u.tgt.kind === 'creep') hurtCreep(sim, t, u.dmg, u.owner);
+        else if (u.tgt.kind === 'tower') hurtTower(sim, t, 1 - u.team, u.dmg, u.owner);
         else {
           t.hp -= u.dmg * (def.bldOnly ? 1.5 : 1);
           if (t.hp <= 0) {
@@ -1195,11 +1248,15 @@ function stepCreep(sim, u) {
       return;
     }
   }
-  /* nothing to fight — HUNT the nearest opposing tower in sight */
+  /* nothing to fight — HUNT the nearest opposing tower in sight; if the enemy
+     base is still shielded and we're at its doorstep, widen the search so the
+     whole wave swarms the ring guards */
+  const oppBase0 = baseOf(1 - u.team);
+  const sieging = baseShielded(sim, 1 - u.team) && dist(u.x, u.y, oppBase0.x, oppBase0.y) <= BASE_ZONE;
   let hunt = null, hd2 = Infinity;
   for (const tw of towersOf(sim, 1 - u.team)) {
     const d = dist(u.x, u.y, tw.x, tw.y);
-    if (d <= Math.max(def.aggro * 1.3, 220) && d < hd2) { hd2 = d; hunt = tw; }
+    if (d <= (sieging ? BASE_ZONE : Math.max(def.aggro * 1.3, 220)) && d < hd2) { hd2 = d; hunt = tw; }
   }
   if (hunt) {
     if (hd2 > def.range + ETOWER.r) {
@@ -1210,7 +1267,7 @@ function stepCreep(sim, u) {
   }
   const oppBase = baseOf(1 - u.team);
   const db = dist(u.x, u.y, oppBase.x, oppBase.y);
-  if (db <= oppBase.r + def.range + 10) {
+  if (db <= oppBase.r + def.range + 10 && !baseShielded(sim, 1 - u.team)) {
     if (u.cd <= 0) {
       u.cd = 10;
       hurtBase(sim, 1 - u.team, Math.round(u.dmg * (def.bldOnly ? 1.4 : 1)));
@@ -1225,6 +1282,120 @@ function stepCreep(sim, u) {
   const d = dist(u.x, u.y, wp.x, wp.y);
   if (d < 30) u.wp = clamp(u.wp + step, 0, path.length - 1);
   if (d > 1) { u.x += ((wp.x - u.x) / d) * spd; u.y += ((wp.y - u.y) / d) * spd; }
+}
+
+/* ---------------- the robot brain: shop, build, cast, push, retreat ---------------- */
+
+function stepBot(sim, p) {
+  if (sim.tick % 10 !== p.seat % 10) return;      // one decision a second, staggered
+  /* wedged against a tree? hop sideways to a clear spot, then re-plan */
+  const wasStuck = p.botLastX !== undefined && p.moveTo && dist(p.x, p.y, p.botLastX, p.botLastY) < 5;
+  p.botLastX = p.x; p.botLastY = p.y;
+  if (wasStuck) {
+    const a0 = Math.random() * Math.PI * 2;
+    for (let k = 0; k < 8; k++) {
+      const a = a0 + (k * Math.PI) / 4;
+      const jx = p.x + Math.cos(a) * 150, jy = p.y + Math.sin(a) * 150;
+      if (walkable(sim.world, jx, jy)) { p.moveTo = { x: jx, y: jy }; p.botWp = null; return; }
+    }
+  }
+  const hd = heroDef(p);
+  const home = baseOf(p.team), oppB = baseOf(1 - p.team);
+  const frac = p.hp / p.maxhp;
+
+  /* --- builder-type bots fortify FIRST, then spend leftovers on gear --- */
+  if (hd.discount && p.coins >= 90 && Math.random() < 0.5 &&
+      sim.blds.filter((b) => b.owner === p.id).length < 6) {
+    for (let tries = 0; tries < 6; tries++) {
+      const bx = p.x + (Math.random() - 0.5) * 320, by = p.y + (Math.random() - 0.5) * 320;
+      if (build(sim, p.id, ['turret', 'mortar', 'syrup'][(Math.random() * 3) | 0], bx, by) === 'ok') break;
+    }
+  }
+
+  /* --- shopping: same gear shop, same prices, lowest tier first --- */
+  const order = ['dmg', 'hp', 'pow', 'spd'];
+  const next = order.reduce((a, b) => (p.up[a] <= p.up[b] ? a : b));
+  const reserve = hd.discount ? 240 : 120;        // builders save up for bricks
+  if (p.up[next] < HUP_MAX && p.coins >= hupCost(p.up[next]) + reserve) upgradeHero(sim, p.id, next);
+
+  /* --- abilities on the same cooldowns humans get --- */
+  const foes = creepsOf(sim, 1 - p.team);
+  let nNear = 0, nearest = Infinity;
+  for (const e of foes) { const d = dist(e.x, e.y, p.x, p.y); if (d < 260) { nNear++; if (d < nearest) nearest = d; } }
+  for (const q of oppHeroes(sim, p.team)) { const d = dist(q.x, q.y, p.x, p.y); if (d < 260) { nNear++; if (d < nearest) nearest = d; } }
+  if (nearest < 220) castAbility(sim, p.id, 0);
+  if (nNear >= 3) castAbility(sim, p.id, 1);
+  if (frac < 0.55 || nNear >= 2) castAbility(sim, p.id, 2);
+
+  /* --- macro: heal up when hurt, defend home, jungle early, else push a lane --- */
+  if (p.botRetreat) {
+    if (frac > 0.9) p.botRetreat = false;
+    else {
+      p.moveTo = { x: home.x - Math.sign(home.x) * (home.r + 90), y: home.y - Math.sign(home.y) * (home.r + 90) };
+      return;
+    }
+  } else if (frac < 0.35) { p.botRetreat = true; return; }
+
+  /* home under siege? peel back */
+  let threat = null, td = Infinity;
+  for (const e of foes) {
+    const d = dist(e.x, e.y, home.x, home.y);
+    if (d < 620 && d < td) { td = d; threat = e; }
+  }
+  if (threat) { p.moveTo = { x: threat.x, y: threat.y }; return; }
+
+  /* young + healthy → clear a nearby camp for XP */
+  if (p.lvl < 4 && frac > 0.7) {
+    let camp = null, cd2 = Infinity;
+    for (const n of sim.neutrals) {
+      const d = dist(n.x, n.y, p.x, p.y);
+      if (d < 520 && d < cd2) { cd2 = d; camp = n; }
+    }
+    if (camp) { p.moveTo = { x: camp.x, y: camp.y }; return; }
+  }
+
+  /* healthy and an enemy tower in sight? walk up and dismantle it */
+  if (frac > 0.6) {
+    let tw = null, twd = Infinity;
+    for (const t2 of towersOf(sim, 1 - p.team)) {
+      const d = dist(t2.x, t2.y, p.x, p.y);
+      if (d < 560 && d < twd) { twd = d; tw = t2; }
+    }
+    if (tw) { p.moveTo = { x: tw.x, y: tw.y }; return; }
+  }
+
+  /* push the assigned lane, waypoint by waypoint (never wedged in trees) */
+  if (p.botLane === undefined) p.botLane = p.seat % N_PATHS;
+  const path = sim.world.paths[p.botLane];
+  if (p.botWp === undefined || p.botWp === null) {
+    let bi = 0, bd2 = Infinity;
+    for (let i = 0; i < path.length; i++) {
+      const d = dist(p.x, p.y, path[i].x, path[i].y);
+      if (d < bd2) { bd2 = d; bi = i; }
+    }
+    p.botWp = bi;
+    p.botWpFresh = true;
+  }
+  const step = p.team === 0 ? -1 : 1;               // toward the enemy's end
+  /* never target our own base-end waypoint — the keep clamp makes it unreachable */
+  if (p.botWpFresh) {
+    p.botWp = clamp(p.botWp + step, 0, path.length - 1);
+    p.botWpFresh = false;
+  }
+  if (dist(p.x, p.y, path[p.botWp].x, path[p.botWp].y) < 110) {
+    p.botWp = clamp(p.botWp + step, 0, path.length - 1);
+  }
+  /* at the shielded enemy base: camp the nearest ring guard instead */
+  if (dist(p.x, p.y, oppB.x, oppB.y) < BASE_ZONE && baseShielded(sim, 1 - p.team)) {
+    let ring = null, rd = Infinity;
+    for (const tw of towersOf(sim, 1 - p.team)) {
+      const d = dist(tw.x, tw.y, p.x, p.y);
+      if (d < rd) { rd = d; ring = tw; }
+    }
+    if (ring) { p.moveTo = { x: ring.x, y: ring.y }; return; }
+  }
+  p.moveTo = { x: path[p.botWp].x, y: path[p.botWp].y };
+
 }
 
 /* ---------------- neutral camps: cranky at everyone ---------------- */
@@ -1287,10 +1458,10 @@ function stepTower(sim, tw, team) {
   if (!best) return;
   tw.cd = ETOWER.cd;
   addFx(sim, 'etzap', tw.x, tw.y, best.x, best.y);
-  if (kind === 'hero') hitHeroFrom(sim, best, ETOWER.dmg);
-  else if (kind === 'creep') hurtCreep(sim, best, ETOWER.dmg, null);
+  if (kind === 'hero') hitHeroFrom(sim, best, towerDmgVsHero(best));
+  else if (kind === 'creep') hurtCreep(sim, best, towerDmgVsCreep(best), null);
   else {
-    best.hp -= ETOWER.dmg;
+    best.hp -= 110;                     /* buildings are sturdy targets now */
     if (best.hp <= 0) {
       sim.blds = sim.blds.filter((b) => b.id !== best.id);
       sim.allies = sim.allies.filter((a) => a.from !== best.id);
@@ -1325,13 +1496,18 @@ function stepBld(sim, b) {
     if (any) { b.cd = def.cd; addFx(sim, 'syrup', b.x, b.y, undefined, undefined, range); }
     return;
   }
-  let best = null, bd = Infinity;
+  let best = null, bd = Infinity, targetHero = false;
   for (const e of foes) {
     const air = !!creepDef(e.team, e.type).air;
     if (def.air ? !air : air) continue;
     const d = dist(e.x, e.y, b.x, b.y);
     if (def.minRange && d < def.minRange) continue;
     if (d <= range && d < bd) { bd = d; best = e; }
+  }
+  if (!def.air) for (const q of oppHeroes(sim, b.team)) {   /* ground guns fight rival heroes */
+    const d = dist(q.x, q.y, b.x, b.y);
+    if (def.minRange && d < def.minRange) continue;
+    if (d <= range && d < bd) { bd = d; best = q; targetHero = true; }
   }
   const dmg = Math.round(def.dmg * Math.pow(BUP.dmgMul, b.lvl - 1));
   if (best) {
@@ -1341,7 +1517,8 @@ function stepBld(sim, b) {
       addFx(sim, 'shell', b.x, b.y, best.x, best.y);
     } else {
       addFx(sim, b.type === 'launcher' ? 'zap' : 'pew', b.x, b.y, best.x, best.y);
-      hurtCreep(sim, best, dmg, b.owner);
+      if (targetHero) pvpHit(sim, best, dmg, sim.players.get(b.owner) || null);
+      else hurtCreep(sim, best, dmg, b.owner);
     }
     return;
   }
@@ -1354,7 +1531,7 @@ function stepBld(sim, b) {
   }
   const oppBase = baseOf(opp);
   const dbase = dist(oppBase.x, oppBase.y, b.x, b.y);
-  if (dbase <= range + oppBase.r && dbase < bd) bt = { base: opp };
+  if (!baseShielded(sim, opp) && dbase <= range + oppBase.r && dbase < bd) bt = { base: opp };
   if (!bt) return;
   b.cd = def.cd;
   if (bt.tower) {
@@ -1396,6 +1573,7 @@ function stepSim(sim) {
       }
       continue;
     }
+    if (p.bot) stepBot(sim, p);
     if (p.armor > 0) p.armor--;
     if (p.frenzy > 0) p.frenzy--;
     if (p.haste > 0) p.haste--;
@@ -1464,7 +1642,8 @@ function stepSim(sim) {
         if (d <= hd.range + BLD[b.type].r && d < bd) { bd = d; best = b; kind = 'bld'; }
       }
       const oppBase = baseOf(opp);
-      if (!best && dist(p.x, p.y, oppBase.x, oppBase.y) <= hd.range + oppBase.r + 10) { best = oppBase; kind = 'base'; }
+      if (!best && !baseShielded(sim, opp) &&
+          dist(p.x, p.y, oppBase.x, oppBase.y) <= hd.range + oppBase.r + 10) { best = oppBase; kind = 'base'; }
       if (best) {
         p.atkCd = Math.max(2, Math.round(hd.cd * (p.frenzy > 0 ? 0.5 : 1)));
         addFx(sim, hd.range > 100 ? 'pew' : 'slash', p.x, p.y, best.x, best.y);
@@ -1498,13 +1677,6 @@ function stepSim(sim) {
   if (--sim.spawnT <= 0) {
     sim.spawnT = SPAWN_EVERY;
     spawnGroups(sim);
-  }
-  /* AI heroes reinforce any side that has no human players */
-  if (--sim.aiHeroT <= 0) {
-    sim.aiHeroT = EHERO_EVERY;
-    const humans = [0, 0];
-    for (const p of sim.players.values()) if (p.hero && p.connected) humans[p.team]++;
-    for (const team of [0, 1]) if (humans[team] === 0) spawnAIHero(sim, team);
   }
   for (const c of sim.camps) {
     if (c.respawnT > 0 && --c.respawnT <= 0) fillCamp(sim, c);
@@ -1589,6 +1761,8 @@ function snapshot(sim) {
   };
   snap.chit = sim.tick - sim.castle.hitAt < 12 ? 1 : 0;
   snap.hhit = sim.tick - sim.horde.hitAt < 12 ? 1 : 0;
+  snap.csh = baseShielded(sim, 0) ? 1 : 0;
+  snap.hsh = baseShielded(sim, 1) ? 1 : 0;
   snap.fogV = sim.fogV;
   snap.fog = packFog(sim.fog);
   if (sim.over !== null) snap.over = sim.over;
@@ -2563,12 +2737,28 @@ function drawFog(g, fogArr, fogV, cache) {
   g.drawImage(cache.cnv, -WORLD_W, -WORLD_H, WORLD_W * 2, WORLD_H * 2);
 }
 
+/* the "dismantle my ring first" shield bubble around a protected base */
+function drawBaseShield(g, x, y, r, color, now) {
+  g.save(); g.translate(x, y);
+  g.globalAlpha = 0.55 + Math.sin(now * 0.004) * 0.12;
+  g.strokeStyle = color; g.lineWidth = 10;
+  g.setLineDash([34, 22]); g.lineDashOffset = -(now * 0.02) % 56;
+  g.beginPath(); g.arc(0, 0, r, 0, Math.PI * 2); g.stroke();
+  g.setLineDash([]);
+  g.globalAlpha = 0.1;
+  g.fillStyle = color;
+  g.beginPath(); g.arc(0, 0, r, 0, Math.PI * 2); g.fill();
+  g.restore();
+}
+
 /* one full frame from a snapshot — both screens use this */
 function drawScene(g, world, snap, seats, now, z, mySeat, fogCache) {
   drawTerrain(g, world, snap.ap, now);
   drawFields(g, snap.fields || [], now);
   drawCastleAt(g, world.castle.x, world.castle.y, snap.c[0], snap.c[1], snap.chit, now);
   drawHordeBase(g, world.horde.x, world.horde.y, snap.hb[0], snap.hb[1], snap.hhit, now);
+  if (snap.csh) drawBaseShield(g, world.castle.x, world.castle.y, CASTLE.r * 1.9, '#7fd8ff', now);
+  if (snap.hsh) drawBaseShield(g, world.horde.x, world.horde.y, HORDE.r * 1.75, '#c95cff', now);
   for (const t of snap.eb || []) drawETower(g, t, z, now, false);
   for (const t of snap.pt || []) drawETower(g, t, z, now, true);
   for (const b of snap.b) drawBld(g, b, seats, z, now);
@@ -2645,7 +2835,7 @@ function createHost(ctx) {
   let prev = null, cur = null;
   let fxLive = [];
   let canvas, g, cam = { x: 0, y: 0, z: 0.2, tz: 0.2 };
-  let dragging = null, lastPhase = '', lastTowers = [-1, -1];
+  let dragging = null, lastPhase = '', lastTowers = [-1, -1], lastPlayerN = 0;
   const seenEHeroes = new Set();
   const fogCache = { v: -1, cnv: null };
   let onResize;
@@ -2655,6 +2845,9 @@ function createHost(ctx) {
     for (const p of ctx.players()) {
       const sp = sim.players.get(p.id);
       if (sp) arr[sp.seat] = { name: p.name, avatar: p.avatar, color: p.color, connected: p.connected };
+    }
+    for (const sp of sim.players.values()) {
+      if (sp.bot) arr[sp.seat] = { name: sp.botName, avatar: '🤖', color: sp.botColor, connected: true, bot: true };
     }
     return arr;
   }
@@ -2723,6 +2916,7 @@ function createHost(ctx) {
     fxLive = fxLive.filter((f) => now - f.t0 < 2000);
     prev = cur;
     cur = { at: now, snap };
+    if (sim.players.size !== lastPlayerN) { lastPlayerN = sim.players.size; sendInit(); }
     ctx.sendAll(snap);
     updateHud(snap);
   }
@@ -2791,7 +2985,7 @@ function createHost(ctx) {
     $q('.gg-roster').innerHTML = snap.pl.map((r) => {
       const s = st[r[0]];
       if (!s) return '';
-      const hero = (r[1] >= 0 ? HEROES[r[1]].emoji : '❔') + (TEAM_EMOJI[r[19]] || '');
+      const hero = (r[1] >= 0 ? HEROES[r[1]].emoji : '❔') + (TEAM_EMOJI[r[19]] || '') + (s.bot ? '🤖' : '');
       const status = r[6] > 0 ? ` · 😵 ${Math.ceil(r[6] / 10)}s` : ` · Lv ${r[11]}`;
       return `<div class="gg-chip ${s.connected ? '' : 'gg-chip-off'}" style="border-color:${s.color}">
         <span class="gg-chip-hero">${hero}</span>
@@ -2806,8 +3000,8 @@ function createHost(ctx) {
     }
     lastPhase = snap.ph;
     const nE = (snap.eb || []).length, nP = (snap.pt || []).length;
-    if (lastTowers[1] >= 0 && nE < lastTowers[1]) banner(`<b>HORDE TOWER DOWN! 💥</b><span>${TEAM_NAME[0]} are pushing in!</span>`);
-    if (lastTowers[0] >= 0 && nP < lastTowers[0]) banner(`<b>GUMMI TOWER DOWN! 💥</b><span>${TEAM_NAME[1]} are pushing in!</span>`);
+    if (lastTowers[1] >= 0 && nE < lastTowers[1]) banner(`<b>TOWER CAPTURED! 🍬</b><span>A horde tower now fights for the ${TEAM_NAME[0]}!</span>`);
+    if (lastTowers[0] >= 0 && nP < lastTowers[0]) banner(`<b>TOWER CAPTURED! 👹</b><span>A gummi tower now fights for the ${TEAM_NAME[1]}!</span>`);
     lastTowers = [nP, nE];
     for (const [arr, defs, emoji] of [[snap.e || [], ETYPES, '👹'], [snap.a || [], ATYPES, '🍬']]) {
       const keyOf = arr === snap.e ? (r) => ETYPE[r[1]] : (r) => ATYPE[r[2]];
@@ -3466,7 +3660,9 @@ export const __sim = {
   makeSim, addPlayer, pickHero, stepSim, build, canPlace, buildWorld,
   upgradeBld, upgradeHero, sellBld, castAbility, snapshot, walkable,
   hurtCreep, hurtNeutral, hurtTower, hurtBase, hurtETower, hurtHorde, addXp,
-  makeComp, spawnCreep, spawnGroups, spawnAIHero, creepsOf, towersOf, baseOf, stepBld, stepCreep, heroesOfTeam, pvpHit, oppHeroes,
+  makeComp, spawnCreep, spawnGroups, spawnAIHero, creepsOf, towersOf, baseOf, stepBld, stepCreep, stepTower, heroesOfTeam, pvpHit, oppHeroes,
+  addBot, balanceTeams, stepBot,
+  towerDmgVsCreep, towerDmgVsHero, baseShielded,
   HEROES, BLD, CLASSES, ETYPES, ATYPES, NTYPES, ETOWER, CASTLE, HORDE,
   E_SKIN, A_SKIN, BASE_RING, BASE_ZONE, TEAM_NAME, WORLD_W, WORLD_H,
   WALK_COLS, WALK_ROWS, WALK_CELL, SPAWN_EVERY, GROUP_SIZE, XP_LVL,
