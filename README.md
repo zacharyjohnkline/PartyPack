@@ -31,33 +31,37 @@ js/games/topbanana.js   Apples-to-Apples-style judging game
 js/games/sweetpath.js   Sweet Path candy board race
 js/games/gumdropguardians.js  Gumdrop Guardians 🛡️ (1-6 players)
 
-A candy MOBA for the living room — play it co-op against the AI horde, or
-split into teams and go head to head. At the hero-select screen every player
-picks a SIDE (🍬 Gummi Kingdom or 👹 Rock Candy Horde) and a hero; destroy the
-other team's base to win.
+A candy MOBA for the living room — co-op against the AI horde, or split into
+teams and go head to head. Pick a SIDE at the select screen, then a hero from
+that side's OWN roster:
 
-The war is perfectly fair. Every 20 seconds both bases march an IDENTICAL
-group of 10 down the three lanes — same classes, same stats, different
-costumes (Gummy Bruisers vs Choco Chompers, Bonbon Bees vs Wafer Wasps,
-Jawbreaker Brutes vs Gumdrop Golems...). Both sides own 10 towers: two per
-lane plus a ring of four guarding the base, each hitting hard enough to fell
-the tankiest knight in about 8 swats — so there's no sprinting past the army
-to backdoor the enemy keep, and defenders chase invading heroes relentlessly
-anywhere near their home base. Any side with no human players gets AI
-champions (the Sour Sergeant, Licorice Sniper, and Rock Candy Colossus — or
-their gummi counterparts) marching on a schedule, so solo-vs-horde still
-works beautifully.
+  🍬 Gummi Kingdom — Sir Crunch-a-Lot, Huckleberry Fin, Minty Merlin,
+     Gingerbread Greta (bash, taunt, meteors, heals, walls, overclocks)
+  👹 Rock Candy Horde — Sourpuss Slasher (spins, rages, LEAPS), Licorice
+     Lasher (triple whip-cracks, snares, team sprints), Rock Candy Shaman
+     (shard storms, crystal walls, life-draining feasts), Taffy Tinker
+     (goo bombs, patch-ups, deployable scrap turrets)
 
-Between the lanes: rock ridges and tree thickets that block travel (never
-sealing anything off), and eight neutral camps — Taffy Wolves, Brittle Bears,
-and the Elder Rockjaw — that pay coins and hero XP when cleared. Heroes grow
-through battle-earned LEVELS and purchasable GEAR (Lollipop Blade, Gumdrop
-Plate, Zoom-Zoom Boots, Star Charm, tiers I-VIII), all from the 🎒 shop on
-your phone, mid-fight, no pauses. Player-built ground artillery even lays
-siege to enemy towers and bases when no creeps are in range.
+Rival heroes genuinely fight: auto-attacks, abilities, meteors, and syrup all
+work on the other team's players, and takedowns pay coins + XP by level.
 
-Phones are full controllers: joystick, three hero powers, a snug live view of
-your hero, and the shop overlay for gear, building, and tower upgrades.
+The war is perfectly fair — every 20 seconds both bases march an IDENTICAL
+group of 10 (same classes, different costumes), and creep waves actively hunt
+the other side's towers. Each army owns 12 towers: two per lane plus a ring
+of six around the base covering front AND rear — and they hit hard enough to
+fell the tankiest melee hero in about 5 zaps, so nobody tanks a tower dive
+for free. Defenders chase invading heroes relentlessly near their home base.
+Sides with no human players get AI champions on a schedule.
+
+The wilds are now a proper FOREST: hundreds of tree thickets and rock ridges
+carve real routes between the lanes, and the entire map rim is tree-walled —
+there is no strolling around the outside. Eight neutral camps (Taffy Wolves,
+Brittle Bears, the Elder Rockjaw) pay coins and hero XP. Heroes grow through
+battle-earned LEVELS and tiered GEAR from the 🎒 phone shop, mid-fight, no
+pauses; idle ground artillery besieges enemy structures.
+
+Phones are full controllers: joystick, three hero powers, a live view of your
+hero, and the shop overlay for gear, building, and tower upgrades.
 
 ## Games
 
