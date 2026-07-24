@@ -145,10 +145,31 @@
   padding: 8px 12px; background: rgba(0, 0, 0, 0.35);
   font-weight: 700; font-size: 0.95rem;
 }
+.gg-cs-lvl {
+  background: #6b4f86; color: #fff; border-radius: 999px;
+  padding: 2px 10px; font-weight: 700; font-size: 0.85rem; white-space: nowrap;
+}
+.gg-shopbtn {
+  font-size: 1.3rem; line-height: 1; padding: 6px 12px; border-radius: 12px;
+  border: 3px solid #7a4d21; background: #ffd93d; cursor: pointer;
+  box-shadow: 0 3px 0 #7a4d21;
+}
+.gg-shopbtn:active { transform: translateY(2px); box-shadow: 0 1px 0 #7a4d21; }
+.gg-shopbtn-on { background: #ff9d3d; }
+.gg-cs-xp {
+  position: absolute; left: 2px; bottom: 1px; height: 3px; width: 0%;
+  background: #c95cff; border-radius: 999px; transition: width 0.3s; max-width: calc(100% - 4px);
+}
+.gg-tier {
+  font-style: normal; font-size: 0.72rem; color: #7a4d21;
+  background: #ffe9c9; border-radius: 6px; padding: 1px 6px; margin-left: 6px;
+}
 .gg-cs-hpwrap {
-  flex: 1; height: 14px; border-radius: 999px; overflow: hidden;
+  position: relative;
+  flex: 1; height: 14px; border-radius: 999px;
   background: rgba(0, 0, 0, 0.5); border: 2px solid rgba(255, 255, 255, 0.35);
 }
+.gg-cs-hp { border-radius: 999px; overflow: hidden; }
 .gg-cs-hp { height: 100%; background: #6bcf7f; transition: width 0.25s; }
 
 .gg-canvaswrap { flex: 1; min-height: 0; position: relative; }

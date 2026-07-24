@@ -33,8 +33,24 @@ const WORLD_W = 2140;              // half-extents of a 16:9 widescreen map
 const WORLD_H = 1204;              // (4280 x 2408 — under a minute corner to corner)
 const N_PATHS = 3;                 // three lanes: high road, mid road, low road
 
-const CASTLE = { r: 95, hp: 3000, x: 1720, y: 784 };     // player base, bottom-right
-const HORDE  = { r: 120, x: -1720, y: -784 };            // enemy cavern, top-left
+const CASTLE = { r: 95, hp: 3500, x: 1720, y: 784 };     // player base, bottom-right
+const HORDE  = { r: 120, hp: 5200, x: -1720, y: -784 };  // enemy cavern — destroy it to WIN
+
+/* the real-time engine: both bases spawn a group every 20 s, forever */
+const SPAWN_EVERY = 200;           // ticks between creep groups
+const GROUP_SIZE = 10;             // units per group, per side
+const TIME_SCALE = 0.08;           // enemy hp/dmg +8% per minute
+const FOUNTAIN_R = 300;            // heroes heal fast near their own castle
+const COIN_TRICKLE = 1;            // passive coins per second per player
+
+/* enemy lane towers — brutal: ~8 hits fells even the tankiest hero */
+const ETOWER = { hp: 2600, dmg: 95, range: 270, cd: 15, r: 34, coin: 120, xp: 150 };
+const ETOWER_AT = [0.45, 0.22];    // fractions along each lane, measured from the cavern
+
+/* walkability grid — trees & rock ridges block off-lane travel */
+const WALK_CELL = 100;
+const WALK_COLS = Math.ceil((WORLD_W * 2) / WALK_CELL);
+const WALK_ROWS = Math.ceil((WORLD_H * 2) / WALK_CELL);
 
 /* fog of war — coarse grid, revealed by hero travel, never re-fogs */
 const FOG_CELL = 150;
@@ -42,11 +58,8 @@ const FOG_COLS = Math.ceil((WORLD_W * 2) / FOG_CELL);    // 29 (fits an int32 ro
 const FOG_ROWS = Math.ceil((WORLD_H * 2) / FOG_CELL);    // 17
 const REVEAL_R = 430;              // how far a walking hero can see
 
-const PREP_FIRST = 450;            // 45 s before wave 1 (learn + build)
-const PREP_T = 200;                // 20 s between later waves
 const PICK_FAILSAFE = 450;         // auto-assign heroes after 45 s
-const LAST_WAVE = 20;              // survive all 20 → victory
-const START_COINS = 140;
+const START_COINS = 160;
 
 /* heroes — pick one at the start, it's yours for the match.
    Three abilities each (see ABILITIES below). */
@@ -86,15 +99,21 @@ const ABILITIES = {
   ],
 };
 
-/* hero upgrade tracks — cost grows with each level bought (max 8 each) */
+/* GEAR — equipment you buy and then upgrade tier by tier (max VIII) */
 const HUP = {
-  dmg: { label: 'Attack',  emoji: '⚔️', mul: 0.12, hint: '+12% attack damage' },
-  hp:  { label: 'Health',  emoji: '❤️', mul: 0.15, hint: '+15% max health' },
-  spd: { label: 'Speed',   emoji: '👟', mul: 0.06, hint: '+6% run speed' },
-  pow: { label: 'Powers',  emoji: '🌟', mul: 0.15, hint: '+15% ability strength' },
+  dmg: { label: 'Lollipop Blade',  emoji: '🗡️', mul: 0.12, hint: '+12% attack damage per tier' },
+  hp:  { label: 'Gumdrop Plate',   emoji: '🛡️', mul: 0.15, hint: '+15% max health per tier' },
+  spd: { label: 'Zoom-Zoom Boots', emoji: '👟', mul: 0.06, hint: '+6% run speed per tier' },
+  pow: { label: 'Star Charm',      emoji: '⭐', mul: 0.15, hint: '+15% ability strength per tier' },
 };
 const HUP_MAX = 8;
+const TIER = ['—', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII'];
 const hupCost = (n) => 50 + 30 * n;
+
+/* hero LEVELS — earned through play: kills, creeps, towers */
+const XP_LVL = [50, 120, 210, 330, 480, 660, 880, 1140, 1450];   // cumulative, lvl 2..10
+const LVL_DMG = 0.08, LVL_HP = 0.10, LVL_POW = 0.05;             // per level past 1
+const XP_SHARE_R = 520;                                          // nearby allies get 45%
 
 /* the tower catalog — different tools for different jobs */
 const BLD = {
@@ -123,28 +142,51 @@ const GUMMY = { hp: 60, dmg: 6, cd: 8, range: 26, speed: 2.6, aggro: 170, leash:
 
 /* the enemy bestiary — cost is its share of a wave's budget */
 const ETYPES = {
-  chomper:  { label: 'Choco Chomper', emoji: '🍪', hp: 55,  dmg: 7,  spd: 1.5, range: 26, aggro: 155,
-              coin: 4, cost: 1, unlock: 1 },
-  sprinter: { label: 'Sour Sprinter', emoji: '🍋', hp: 32,  dmg: 5,  spd: 2.6, range: 24, aggro: 120,
-              coin: 3, cost: 1, unlock: 2 },
-  wasp:     { label: 'Wafer Wasp',    emoji: '🐝', hp: 45,  dmg: 6,  spd: 2.2, range: 26, aggro: 155,
-              coin: 5, cost: 2, unlock: 3, air: true },
-  sapper:   { label: 'Jelly Sapper',  emoji: '🐛', hp: 85,  dmg: 22, spd: 1.7, range: 28, aggro: 300,
-              coin: 6, cost: 2, unlock: 4, bldOnly: true },
-  golem:    { label: 'Gumdrop Golem', emoji: '🗿', hp: 300, dmg: 18, spd: 1.1, range: 30, aggro: 135,
-              coin: 12, cost: 5, unlock: 6 },
-  boss:     { label: 'Rock Candy Colossus', emoji: '👹', hp: 1600, dmg: 45, spd: 0.9, range: 40, aggro: 210,
-              coin: 60, cost: 0, unlock: 99, boss: true },
+  chomper:  { label: 'Choco Chomper', hp: 60,  dmg: 8,  spd: 1.6, range: 26, aggro: 155,
+              coin: 4, xp: 8, unlockMin: 0 },
+  sprinter: { label: 'Sour Sprinter', hp: 36,  dmg: 6,  spd: 2.7, range: 24, aggro: 120,
+              coin: 3, xp: 6, unlockMin: 0.8 },
+  wasp:     { label: 'Wafer Wasp',    hp: 50,  dmg: 7,  spd: 2.3, range: 26, aggro: 155,
+              coin: 5, xp: 10, unlockMin: 2, air: true },
+  sapper:   { label: 'Jelly Sapper',  hp: 95,  dmg: 24, spd: 1.8, range: 28, aggro: 300,
+              coin: 6, xp: 12, unlockMin: 3.5, bldOnly: true },
+  golem:    { label: 'Gumdrop Golem', hp: 320, dmg: 20, spd: 1.2, range: 30, aggro: 135,
+              coin: 12, xp: 25, unlockMin: 5.5 },
+  /* the horde's HEROES — spawn on a schedule and push a lane hard */
+  eknight:  { label: 'Sour Sergeant', hp: 950, dmg: 42, spd: 2.2, range: 44, aggro: 220,
+              coin: 60, xp: 130, unlockMin: 99, hero: true, tough: 0.75 },
+  earcher:  { label: 'Licorice Sniper', hp: 560, dmg: 34, spd: 2.3, range: 240, aggro: 260,
+              coin: 60, xp: 130, unlockMin: 99, hero: true },
+  boss:     { label: 'Rock Candy Colossus', hp: 2300, dmg: 62, spd: 1.6, range: 44, aggro: 220,
+              coin: 90, xp: 160, unlockMin: 99, hero: true, boss: true },
 };
 const ETYPE = Object.keys(ETYPES);
-const HP_SCALE = 0.10, DMG_SCALE = 0.06;      // per wave past the first
-const WAVE_BONUS = (w) => 15 + 5 * w;
-const KILLER_BONUS = 0.5;                     // owner of the killer earns +50%
+const EHEROES = ['eknight', 'earcher', 'boss'];
+const EHERO_FIRST = 900, EHERO_EVERY = 1000;  // first at 1:30, then every 100 s
+const KILLER_BONUS = 0.5;                     // owner of the killer earns +50% coins
+
+/* the player base's own lane creeps — gummies marching to war */
+const ATYPES = {
+  gummy:   { label: 'Gummy Guard',   hp: 60,  dmg: 6,  spd: 2.6, range: 26,  cd: 8, aggro: 170, leash: 340 },
+  bruiser: { label: 'Gummy Bruiser', hp: 95,  dmg: 10, spd: 2.2, range: 28,  cd: 9, aggro: 190 },
+  slinger: { label: 'Jelly Slinger', hp: 55,  dmg: 8,  spd: 2.2, range: 150, cd: 10, aggro: 210 },
+};
+const ATYPE = Object.keys(ATYPES);
+
+/* neutral creep camps — clear them for XP and coins; they respawn */
+const NTYPES = {
+  wolf:  { label: 'Taffy Wolf',    hp: 150, dmg: 13, spd: 2.7, range: 26, aggro: 210, n: 3, xp: 30,  coin: 8,  r: 14 },
+  bear:  { label: 'Brittle Bear',  hp: 280, dmg: 19, spd: 2.2, range: 30, aggro: 200, n: 2, xp: 48,  coin: 13, r: 17 },
+  elder: { label: 'Elder Rockjaw', hp: 750, dmg: 32, spd: 1.8, range: 34, aggro: 220, n: 1, xp: 150, coin: 45, r: 22 },
+};
+const NTYPE = Object.keys(NTYPES);
+const CAMP_RESPAWN = 900;                     // 90 s
+const CAMP_LEASH = 380;
 
 /* enemies get pulled off their trail by things near them; they give up
    the chase when the target strays too far */
 const LEASH_MUL = 1.7;
-const RESPAWN_T = (wave) => 80 + 10 * wave;   // hero respawn at the castle
+const RESPAWN_T = (min) => 80 + Math.round(min * 15);   // hero respawn slows over the match
 
 /* ================= tiny math + seeded rng ================= */
 
@@ -212,15 +254,158 @@ function buildWorld(seed) {
     paths.push(pts);
   }
 
-  /* decorative candy scenery, deterministic so every screen matches */
-  const PROP_EMOJI = ['🌲', '🍄', '🌸', '🪨', '🌷', '🎄', '🍩'];
-  for (let i = 0; i < 90; i++) {
+  /* --- point at a fraction of a lane's length (for enemy towers) --- */
+  function alongPath(pts, frac) {
+    let total = 0;
+    for (let i = 0; i < pts.length - 1; i++) total += dist(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
+    let want = total * frac;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const seg = dist(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
+      if (want <= seg) {
+        const t = seg ? want / seg : 0;
+        const dx = pts[i + 1].x - pts[i].x, dy = pts[i + 1].y - pts[i].y;
+        const len = Math.hypot(dx, dy) || 1;
+        return { x: pts[i].x + dx * t, y: pts[i].y + dy * t, px: -dy / len, py: dx / len };
+      }
+      want -= seg;
+    }
+    return { ...pts.at(-1), px: 0, py: 1 };
+  }
+
+  /* --- enemy lane towers, first ones ~45% down each path --- */
+  const etowers = [];
+  for (let li = 0; li < paths.length; li++) {
+    ETOWER_AT.forEach((frac, k) => {
+      const a = alongPath(paths[li], frac);
+      const side = (li + k) % 2 === 0 ? 1 : -1;
+      etowers.push({ x: Math.round(a.x + a.px * 78 * side), y: Math.round(a.y + a.py * 78 * side), lane: li });
+    });
+  }
+
+  /* --- neutral creep camps in the wilds --- */
+  const campKinds = ['wolf', 'wolf', 'wolf', 'wolf', 'bear', 'bear', 'bear', 'elder'];
+  const camps = [];
+  for (const kind of campKinds) {
+    for (let tries = 0; tries < 200; tries++) {
+      const x = (rnd() * 2 - 1) * (WORLD_W - 300), y = (rnd() * 2 - 1) * (WORLD_H - 300);
+      if (paths.some((pp) => distToPath(pp, x, y) < 240)) continue;
+      if (dist(x, y, C.x, C.y) < 650 || dist(x, y, H.x, H.y) < 650) continue;
+      if (camps.some((c) => dist(x, y, c.x, c.y) < 520)) continue;
+      if (etowers.some((t) => dist(x, y, t.x, t.y) < 350)) continue;
+      camps.push({ x: Math.round(x), y: Math.round(y), kind });
+      break;
+    }
+  }
+
+  /* --- elevation ridges + tree thickets that block off-lane travel --- */
+  const cellOk = (x, y) =>
+    Math.abs(x) < WORLD_W - 80 && Math.abs(y) < WORLD_H - 80 &&
+    paths.every((pp) => distToPath(pp, x, y) > 118) &&
+    dist(x, y, C.x, C.y) > 420 && dist(x, y, H.x, H.y) > 420 &&
+    camps.every((c) => dist(x, y, c.x, c.y) > 230) &&
+    etowers.every((t) => dist(x, y, t.x, t.y) > 160);
+  const cellAt = (x, y) => ({
+    i: clamp(Math.floor((x + WORLD_W) / WALK_CELL), 0, WALK_COLS - 1),
+    j: clamp(Math.floor((y + WORLD_H) / WALK_CELL), 0, WALK_ROWS - 1),
+  });
+  const obstacles = [];          // [{i, j, x, y, t:'tree'|'rock', v}]
+  const taken = new Set();
+  function claim(x, y, t) {
+    const { i, j } = cellAt(x, y);
+    const key = j * WALK_COLS + i;
+    if (taken.has(key) || !cellOk(-WORLD_W + (i + 0.5) * WALK_CELL, -WORLD_H + (j + 0.5) * WALK_CELL)) return false;
+    taken.add(key);
+    obstacles.push({ i, j, x: Math.round(-WORLD_W + (i + 0.5) * WALK_CELL), y: Math.round(-WORLD_H + (j + 0.5) * WALK_CELL), t, v: (rnd() * 3) | 0 });
+    return true;
+  }
+  for (let r = 0; r < 6; r++) {                          // rock ridges — the "elevation"
+    let x = (rnd() * 2 - 1) * (WORLD_W - 400), y = (rnd() * 2 - 1) * (WORLD_H - 400);
+    let ang = rnd() * Math.PI * 2;
+    const len = 4 + ((rnd() * 5) | 0);
+    for (let k = 0; k < len; k++) {
+      claim(x, y, 'rock');
+      ang += (rnd() - 0.5) * 0.6;
+      x += Math.cos(ang) * WALK_CELL; y += Math.sin(ang) * WALK_CELL;
+    }
+  }
+  for (let t = 0; t < 30; t++) {                         // tree thickets
+    const x = (rnd() * 2 - 1) * (WORLD_W - 250), y = (rnd() * 2 - 1) * (WORLD_H - 250);
+    const n = 2 + ((rnd() * 4) | 0);
+    let cx = x, cy = y;
+    for (let k = 0; k < n; k++) {
+      claim(cx, cy, 'tree');
+      cx += (rnd() < 0.5 ? -1 : 1) * WALK_CELL * (rnd() < 0.5 ? 1 : 0);
+      cy += (rnd() < 0.5 ? -1 : 1) * WALK_CELL * (cx === x ? 1 : (rnd() < 0.5 ? 1 : 0));
+    }
+  }
+
+  /* walkability grid + guarantee that nothing is sealed off:
+     flood-fill from the castle, then bulldoze a straight line
+     from any cut-off pocket back toward home */
+  function gridFrom(obs) {
+    const g2 = new Uint8Array(WALK_COLS * WALK_ROWS);
+    for (const o of obs) g2[o.j * WALK_COLS + o.i] = 1;
+    return g2;
+  }
+  let block = gridFrom(obstacles);
+  const cc = cellAt(C.x, C.y);
+  for (let guard = 0; guard < 40; guard++) {
+    const seen = new Uint8Array(block.length);
+    const q = [cc.j * WALK_COLS + cc.i];
+    seen[q[0]] = 1;
+    while (q.length) {
+      const cur = q.pop(), ci = cur % WALK_COLS, cj = (cur / WALK_COLS) | 0;
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const ni = ci + di, nj = cj + dj;
+        if (ni < 0 || nj < 0 || ni >= WALK_COLS || nj >= WALK_ROWS) continue;
+        const nk = nj * WALK_COLS + ni;
+        if (seen[nk] || block[nk]) continue;
+        seen[nk] = 1; q.push(nk);
+      }
+    }
+    let pocket = -1;
+    for (let k = 0; k < block.length; k++) if (!block[k] && !seen[k]) { pocket = k; break; }
+    if (pocket < 0) break;
+    let pi = pocket % WALK_COLS, pj = (pocket / WALK_COLS) | 0;
+    while (!seen[pj * WALK_COLS + pi]) {                 // bulldoze toward the castle
+      pi += Math.sign(cc.i - pi) || 0; pj += (pi === cc.i ? Math.sign(cc.j - pj) : 0);
+      const k = pj * WALK_COLS + pi;
+      if (block[k]) {
+        const oi = obstacles.findIndex((o) => o.j * WALK_COLS + o.i === k);
+        if (oi >= 0) obstacles.splice(oi, 1);
+        block[k] = 0;
+      }
+      if (pi === cc.i && pj === cc.j) break;
+    }
+    block = gridFrom(obstacles);
+  }
+
+  /* decorative candy scenery on open ground */
+  const PROP_EMOJI = ['🍄', '🌸', '🌷', '🍩'];
+  for (let i = 0; i < 60; i++) {
     const x = (rnd() * 2 - 1) * (WORLD_W - 120), y = (rnd() * 2 - 1) * (WORLD_H - 120);
     if (paths.some((pp) => distToPath(pp, x, y) < 100)) continue;
     if (dist(x, y, C.x, C.y) < 320 || dist(x, y, H.x, H.y) < 320) continue;
-    props.push({ x: Math.round(x), y: Math.round(y), e: PROP_EMOJI[(rnd() * PROP_EMOJI.length) | 0], s: 26 + rnd() * 26 });
+    const cl = cellAt(x, y);
+    if (block[cl.j * WALK_COLS + cl.i]) continue;
+    props.push({ x: Math.round(x), y: Math.round(y), e: PROP_EMOJI[(rnd() * PROP_EMOJI.length) | 0], s: 24 + rnd() * 22 });
   }
-  return { paths, props, w: WORLD_W, h: WORLD_H, castle: { x: C.x, y: C.y, r: CASTLE.r }, horde: { ...HORDE } };
+  return { paths, props, obstacles, block, camps, etowers,
+           w: WORLD_W, h: WORLD_H, castle: { x: C.x, y: C.y, r: CASTLE.r }, horde: { ...HORDE } };
+}
+
+/* can a unit stand here? bounds + the obstacle grid */
+function walkable(world, x, y) {
+  if (Math.abs(x) > WORLD_W || Math.abs(y) > WORLD_H) return false;
+  const i = clamp(Math.floor((x + WORLD_W) / WALK_CELL), 0, WALK_COLS - 1);
+  const j = clamp(Math.floor((y + WORLD_H) / WALK_CELL), 0, WALK_ROWS - 1);
+  return !world.block[j * WALK_COLS + i];
+}
+/* move with wall-sliding so units skirt trees instead of sticking to them */
+function slideMove(world, u, nx, ny) {
+  if (walkable(world, nx, ny)) { u.x = nx; u.y = ny; return; }
+  if (walkable(world, nx, u.y)) { u.x = nx; return; }
+  if (walkable(world, u.x, ny)) { u.y = ny; }
 }
 
 /* where can a tower go? shared by host validation and the phone's ghost */
@@ -267,6 +452,9 @@ function canPlace(world, blds, x, y, fog) {
   if (fog && !fog[fogIdx(x, y)]) return false;
   if (dist(x, y, CASTLE.x, CASTLE.y) < CASTLE.r + 75) return false;
   if (dist(x, y, HORDE.x, HORDE.y) < HORDE.r + 130) return false;
+  if (!walkable(world, x, y)) return false;
+  for (const c of world.camps) if (dist(x, y, c.x, c.y) < 180) return false;
+  for (const t of world.etowers) if (dist(x, y, t.x, t.y) < 170) return false;
   for (const p of world.paths) if (distToPath(p, x, y) < 48) return false;
   for (const b of blds) {
     const bx = b.x !== undefined ? b.x : b[3], by = b.y !== undefined ? b.y : b[4];
@@ -281,21 +469,41 @@ function makeSim(seed) {
   const sim = {
     seed,
     tick: 0, phase: 'pick', pickLeft: PICK_FAILSAFE,
-    wave: 0, prepLeft: 0, nextId: 1,
+    nextId: 1,
     world: buildWorld(seed),
     castle: { hp: CASTLE.hp, max: CASTLE.hp, hitAt: -999 },
-    players: new Map(),      // playerId -> hero state (see addPlayer)
-    order: [],               // playerIds in seat order
-    enemies: [], allies: [], blds: [], impacts: [], fx: [],
-    spawnQueue: [], activePaths: [],
+    horde: { hp: HORDE.hp, max: HORDE.hp, hitAt: -999 },
+    players: new Map(), order: [],
+    enemies: [], allies: [], blds: [], neutrals: [], impacts: [], fx: [],
+    etowers: [], camps: [],
+    spawnT: 40, eheroT: EHERO_FIRST, eheroN: 0,
     fog: new Uint8Array(FOG_COLS * FOG_ROWS), fogV: 0,
-    over: null,              // 'win' | 'lose'
-    stats: { built: 0, waveReached: 0 },
+    over: null,
+    stats: { built: 0, towersDown: 0 },
   };
-  /* both bases start on the map — everything between them is unexplored */
+  for (const t of sim.world.etowers) {
+    sim.etowers.push({ id: sim.nextId++, x: t.x, y: t.y, lane: t.lane, hp: ETOWER.hp, maxhp: ETOWER.hp, cd: 0 });
+  }
+  for (const c of sim.world.camps) {
+    const camp = { ...c, respawnT: 0, id: sim.nextId++ };
+    sim.camps.push(camp);
+    fillCamp(sim, camp);
+  }
   revealCircle(sim, CASTLE.x, CASTLE.y, 650);
   revealCircle(sim, HORDE.x, HORDE.y, 480);
   return sim;
+}
+
+function fillCamp(sim, camp) {
+  const def = NTYPES[camp.kind];
+  for (let i = 0; i < def.n; i++) {
+    const a = (i / def.n) * Math.PI * 2;
+    sim.neutrals.push({
+      id: sim.nextId++, camp: camp.id, type: camp.kind,
+      x: camp.x + Math.cos(a) * 46, y: camp.y + Math.sin(a) * 46,
+      hp: def.hp, maxhp: def.hp, cd: 0, tgt: null,
+    });
+  }
 }
 
 function addPlayer(sim, playerId) {
@@ -305,9 +513,10 @@ function addPlayer(sim, playerId) {
     id: playerId, seat, hero: null, connected: true,
     x: CASTLE.x - CASTLE.r - 60, y: CASTLE.y - CASTLE.r - 60 - seat * 12, hp: 1, maxhp: 1,
     dead: false, respawn: 0, dir: { x: 0, y: 0 }, moveTo: null,
-    coins: START_COINS + sim.wave * 10,
+    coins: START_COINS + Math.round(sim.tick / 10),
     up: { dmg: 0, hp: 0, spd: 0, pow: 0 },
-    cds: [0, 0, 0], armor: 0, kills: 0, ready: false,
+    xp: 0, lvl: 1,
+    cds: [0, 0, 0], armor: 0, kills: 0,
   };
   sim.players.set(playerId, p);
   sim.order.push(playerId);
@@ -315,88 +524,109 @@ function addPlayer(sim, playerId) {
 }
 
 function heroDef(p) { return HEROES[HERO_IDX.indexOf(p.hero)]; }
-const powMul = (p) => 1 + HUP.pow.mul * p.up.pow;
-const dmgOf = (p) => Math.round(heroDef(p).dmg * (1 + HUP.dmg.mul * p.up.dmg));
-const maxhpOf = (p) => Math.round(heroDef(p).hp * (1 + HUP.hp.mul * p.up.hp));
+const powMul = (p) => (1 + HUP.pow.mul * p.up.pow) * (1 + LVL_POW * (p.lvl - 1));
+const dmgOf = (p) => Math.round(heroDef(p).dmg * (1 + HUP.dmg.mul * p.up.dmg) * (1 + LVL_DMG * (p.lvl - 1)));
+const maxhpOf = (p) => Math.round(heroDef(p).hp * (1 + HUP.hp.mul * p.up.hp) * (1 + LVL_HP * (p.lvl - 1)));
 const speedOf = (p) => heroDef(p).speed * (1 + HUP.spd.mul * p.up.spd);
+
+/* XP: killer earns it all; heroes fighting nearby learn almost as much */
+function addXp(sim, playerId, amount, x, y) {
+  const give = (p, amt) => {
+    if (!p.hero || p.lvl >= 10) { p.xp += amt; return; }
+    p.xp += amt;
+    while (p.lvl < 10 && p.xp >= XP_LVL[p.lvl - 1]) {
+      p.lvl++;
+      const m = maxhpOf(p);
+      p.hp = Math.min(m, p.hp + (m - p.maxhp) + Math.round(m * 0.25));
+      p.maxhp = m;
+      addFx(sim, 'level', p.x, p.y);
+    }
+  };
+  const killer = sim.players.get(playerId);
+  if (killer) give(killer, amount);
+  for (const q of sim.players.values()) {
+    if (!q.hero || q.dead || q.id === playerId) continue;
+    if (dist(q.x, q.y, x, y) <= XP_SHARE_R) give(q, Math.round(amount * 0.45));
+  }
+}
 
 function pickHero(sim, playerId, heroId) {
   const p = sim.players.get(playerId);
   if (!p || p.hero || !HERO_IDX.includes(heroId)) return;
   p.hero = heroId;
   p.maxhp = maxhpOf(p); p.hp = p.maxhp;
-  /* spawn heroes fanned out on the castle's map-facing side */
   const a = Math.atan2(-CASTLE.y, -CASTLE.x) + (p.seat - 2.5) * 0.3;
   p.x = CASTLE.x + Math.cos(a) * (CASTLE.r + 75);
   p.y = CASTLE.y + Math.sin(a) * (CASTLE.r + 75);
   addFx(sim, 'spawn', p.x, p.y);
-  /* everyone picked? on to the first build phase */
   if (sim.phase === 'pick') {
     const waiting = [...sim.players.values()].filter((q) => q.connected && !q.hero);
-    if (!waiting.length) startPrep(sim, PREP_FIRST);
+    if (!waiting.length) startPlay(sim);
   }
 }
 
-function startPrep(sim, ticks) {
-  sim.phase = 'prep';
-  sim.prepLeft = ticks;
-  for (const p of sim.players.values()) { p.ready = false; p.dir = { x: 0, y: 0 }; }
+function startPlay(sim) {
+  sim.phase = 'play';
+  sim.spawnT = 30;                       // first creep groups march in 3 s
+  addFx(sim, 'horn', HORDE.x, HORDE.y);
 }
 
-/* ---------------- wave construction ----------------
-   Budget scales with PLAYER COUNT first, then the wave number.
-   The wave number also unlocks scarier enemy types.            */
-function buildWave(sim, wave) {
-  const rnd = mulberry32(1000 + wave * 7);
-  const P = Math.max(1, [...sim.players.values()].filter((q) => q.hero).length);
-  let budget = Math.round((8 + wave * 5) * (0.7 + 0.33 * P));
-  const isBoss = wave % 5 === 0;
-  if (isBoss) budget = Math.round(budget * 0.7);
+/* ---------------- the two creep factories ---------------- */
 
-  const pool = ETYPE.filter((t) => ETYPES[t].unlock <= wave && !ETYPES[t].boss);
-  /* later types get picked more often once unlocked */
-  const weights = pool.map((t) => 1 + (wave - ETYPES[t].unlock) * 0.15);
+const minutesOf = (sim) => sim.tick / 600;
+const enemyMult = (sim) => 1 + TIME_SCALE * minutesOf(sim);
 
-  const nActive = Math.min(1 + Math.floor((wave - 1) / 3), N_PATHS);
-  const pathIds = [];
-  const all = [...Array(N_PATHS).keys()];
-  for (let i = 0; i < nActive; i++) pathIds.push(all.splice((rnd() * all.length) | 0, 1)[0]);
-  sim.activePaths = pathIds;
-
-  const q = [];
-  let spent = 0, i = 0;
-  while (spent < budget) {
-    let r = rnd() * weights.reduce((a, b) => a + b, 0), pick = pool[0];
-    for (let k = 0; k < pool.length; k++) { r -= weights[k]; if (r <= 0) { pick = pool[k]; break; } }
-    if (ETYPES[pick].cost > budget - spent && pool.includes('chomper')) pick = 'chomper';
-    spent += ETYPES[pick].cost;
-    q.push({ delay: Math.floor(i / pathIds.length) * 9 + ((rnd() * 5) | 0), type: pick, path: pathIds[i % pathIds.length] });
-    i++;
-  }
-  if (isBoss) {
-    q.push({ delay: 30, type: 'boss', path: pathIds[0] });
-    addFx(sim, 'horn', HORDE.x, HORDE.y);
-  }
-  q.sort((a, b) => a.delay - b.delay);
-  sim.spawnQueue = q;
-  sim.bossN = Math.floor(wave / 5);
-}
-
-function spawnEnemy(sim, type, pathIdx) {
+function spawnEnemyAt(sim, type, pathIdx, mult) {
   const def = ETYPES[type];
   const path = sim.world.paths[pathIdx];
-  const w = sim.wave;
-  const hpMul = (1 + HP_SCALE * (w - 1)) * (def.boss ? 1 + 0.25 * (sim.bossN - 1) : 1);
   const e = {
     id: sim.nextId++, type, path: pathIdx, wp: 1,
     x: path[0].x + (Math.random() - 0.5) * 40, y: path[0].y + (Math.random() - 0.5) * 40,
-    hp: Math.round(def.hp * hpMul), maxhp: Math.round(def.hp * hpMul),
-    dmg: Math.round(def.dmg * (1 + DMG_SCALE * (w - 1))),
+    hp: Math.round(def.hp * mult), maxhp: Math.round(def.hp * mult),
+    dmg: Math.round(def.dmg * (1 + (mult - 1) * 0.7)),
     state: 'walk', tgt: null, cd: 0, slow: 0, slowT: 0, stun: 0, taunt: null,
   };
   sim.enemies.push(e);
-  addFx(sim, 'spawn', e.x, e.y);
+  return e;
 }
+
+function spawnEnemyGroup(sim) {
+  const mins = minutesOf(sim);
+  const pool = ETYPE.filter((t) => ETYPES[t].unlockMin <= mins);
+  const mult = enemyMult(sim);
+  for (let i = 0; i < GROUP_SIZE; i++) {
+    const type = pool[(Math.random() * pool.length) | 0];
+    const e = spawnEnemyAt(sim, type, i % N_PATHS, mult);
+    e.x += (Math.random() - 0.5) * 30; e.y += (Math.random() - 0.5) * 30;
+  }
+  addFx(sim, 'spawn', HORDE.x, HORDE.y);
+}
+
+function spawnAllyGroup(sim) {
+  for (let i = 0; i < GROUP_SIZE; i++) {
+    const type = i % 3 === 2 ? 'slinger' : 'bruiser';    // ~6 bruisers + 4 slingers
+    const path = sim.world.paths[i % N_PATHS];
+    const start = path.at(-1);
+    sim.allies.push({
+      id: sim.nextId++, role: 'lane', type, path: i % N_PATHS, wp: path.length - 2,
+      owner: null, from: null,
+      x: start.x + (Math.random() - 0.5) * 50, y: start.y + (Math.random() - 0.5) * 50,
+      hp: ATYPES[type].hp, maxhp: ATYPES[type].hp, cd: 0, tgt: null,
+    });
+  }
+  addFx(sim, 'spawn', CASTLE.x, CASTLE.y);
+}
+
+function spawnEnemyHero(sim) {
+  const type = EHEROES[sim.eheroN % EHEROES.length];
+  const mult = enemyMult(sim) * (1 + 0.12 * Math.floor(sim.eheroN / EHEROES.length));
+  const e = spawnEnemyAt(sim, type, (Math.random() * N_PATHS) | 0, mult);
+  sim.eheroN++;
+  addFx(sim, 'horn', e.x, e.y);
+  return e;
+}
+
+/* ---------------- building (any time — it's all real-time now) ---------------- */
 
 function build(sim, playerId, type, x, y) {
   const p = sim.players.get(playerId);
@@ -419,14 +649,13 @@ function build(sim, playerId, type, x, y) {
 function spawnGummy(sim, b) {
   const a = Math.random() * Math.PI * 2;
   sim.allies.push({
-    id: sim.nextId++, from: b.id, owner: b.owner,
+    id: sim.nextId++, role: 'guard', type: 'gummy', from: b.id, owner: b.owner,
     x: b.x + Math.cos(a) * 44, y: b.y + Math.sin(a) * 44,
     hp: GUMMY.hp * (1 + 0.2 * (b.lvl - 1)), maxhp: GUMMY.hp * (1 + 0.2 * (b.lvl - 1)),
     cd: 0, tgt: null,
   });
 }
 
-/* owner-only tower upgrades — this is the whole point! */
 function upgradeBld(sim, playerId, bldId) {
   const p = sim.players.get(playerId);
   const b = sim.blds.find((q) => q.id === bldId);
@@ -444,7 +673,7 @@ function upgradeBld(sim, playerId, bldId) {
 function sellBld(sim, playerId, bldId) {
   const p = sim.players.get(playerId);
   const i = sim.blds.findIndex((q) => q.id === bldId);
-  if (!p || i < 0 || sim.blds[i].owner !== playerId || sim.phase !== 'prep') return;
+  if (!p || i < 0 || sim.blds[i].owner !== playerId) return;
   const b = sim.blds[i];
   let paid = Math.round(BLD[b.type].cost * (heroDef(p).discount || 1));
   for (let l = 1; l < b.lvl; l++) paid += bupCost(l);
@@ -473,7 +702,6 @@ function addFx(sim, t, x, y, x2, y2, r) {
   if (sim.fx.length > 60) sim.fx.shift();
 }
 
-/* coins for everyone on a kill; the killer's owner gets a tip on top */
 function awardKill(sim, e, killerOwner) {
   const def = ETYPES[e.type];
   for (const p of sim.players.values()) {
@@ -482,61 +710,95 @@ function awardKill(sim, e, killerOwner) {
     if (killerOwner && p.id === killerOwner) { c = Math.round(c * (1 + KILLER_BONUS)); p.kills++; }
     p.coins += c;
   }
+  if (killerOwner) addXp(sim, killerOwner, def.xp, e.x, e.y);
   addFx(sim, 'die', e.x, e.y);
 }
 
 function hurtEnemy(sim, e, dmg, owner) {
   if (e.hp <= 0) return;
-  e.hp -= dmg;
+  e.hp -= Math.round(dmg * (ETYPES[e.type].tough || 1));
   if (e.hp <= 0) awardKill(sim, e, owner);
+}
+
+function hurtNeutral(sim, n, dmg, owner) {
+  if (n.hp <= 0) return;
+  n.hp -= dmg;
+  if (n.hp <= 0) {
+    const def = NTYPES[n.type];
+    const p = owner ? sim.players.get(owner) : null;
+    if (p) { p.coins += def.coin; p.kills++; addXp(sim, owner, def.xp, n.x, n.y); }
+    addFx(sim, 'die', n.x, n.y);
+  }
+}
+
+function hurtETower(sim, t, dmg, owner) {
+  if (t.hp <= 0) return;
+  t.hp -= dmg;
+  addFx(sim, 'hit', t.x, t.y);
+  if (t.hp <= 0) {
+    sim.stats.towersDown++;
+    for (const p of sim.players.values()) if (p.hero) p.coins += p.id === owner ? ETOWER.coin : Math.round(ETOWER.coin / 2);
+    if (owner) addXp(sim, owner, ETOWER.xp, t.x, t.y);
+    addFx(sim, 'crumble', t.x, t.y);
+    addFx(sim, 'towerdown', t.x, t.y);
+  }
+}
+
+function hurtHorde(sim, dmg) {
+  sim.horde.hp -= dmg;
+  sim.horde.hitAt = sim.tick;
+  if (sim.horde.hp <= 0) { sim.horde.hp = 0; sim.over = 'win'; addFx(sim, 'crumble', HORDE.x, HORDE.y); }
 }
 
 /* ---------------- abilities ---------------- */
 
 function castAbility(sim, playerId, i) {
   const p = sim.players.get(playerId);
-  if (!p || !p.hero || p.dead || sim.phase !== 'wave') return;
+  if (!p || !p.hero || p.dead || sim.phase !== 'play') return;
   if (p.cds[i] > 0) return;
   const pm = powMul(p);
   const ab = ABILITIES[p.hero][i];
   p.cds[i] = Math.round(ab[2] * (1 - 0.02 * p.up.pow));
 
   if (p.hero === 'knight') {
-    if (i === 0) {                                       // Shield Bash
+    if (i === 0) {
       addFx(sim, 'bash', p.x, p.y, undefined, undefined, 130);
       for (const e of sim.enemies) if (dist(e.x, e.y, p.x, p.y) <= 130) {
         hurtEnemy(sim, e, Math.round(40 * pm), p.id);
         if (!ETYPES[e.type].boss) e.stun = Math.max(e.stun, 25);
       }
-    } else if (i === 1) {                                // Battle Cry
+      for (const n of sim.neutrals) if (dist(n.x, n.y, p.x, p.y) <= 130) hurtNeutral(sim, n, Math.round(40 * pm), p.id);
+    } else if (i === 1) {
       addFx(sim, 'cry', p.x, p.y, undefined, undefined, 260);
       for (const e of sim.enemies) if (!ETYPES[e.type].bldOnly && dist(e.x, e.y, p.x, p.y) <= 260) {
         e.taunt = { id: p.id, t: Math.round(60 * pm) };
       }
-    } else {                                             // Frosting Armor
+    } else {
       p.armor = Math.round(80 * pm);
       addFx(sim, 'shield', p.x, p.y);
     }
   } else if (p.hero === 'ranger') {
-    if (i === 0) {                                       // Berry Barrage
+    if (i === 0) {
       addFx(sim, 'barrage', p.x, p.y, undefined, undefined, 240);
       for (const e of sim.enemies) if (dist(e.x, e.y, p.x, p.y) <= 240) hurtEnemy(sim, e, Math.round(30 * pm), p.id);
-    } else if (i === 1) {                                // Jam Trap
+      for (const n of sim.neutrals) if (dist(n.x, n.y, p.x, p.y) <= 240) hurtNeutral(sim, n, Math.round(30 * pm), p.id);
+    } else if (i === 1) {
       sim.impacts.push({ t: sim.tick, kind: 'field', x: p.x, y: p.y, r: 150, slow: 0.55, until: sim.tick + Math.round(80 * pm) });
       addFx(sim, 'trap', p.x, p.y, undefined, undefined, 150);
-    } else {                                             // Piercing Shot
+    } else {
       let best = null;
       for (const e of sim.enemies) if (dist(e.x, e.y, p.x, p.y) <= 400 && (!best || e.maxhp > best.maxhp)) best = e;
       if (best) { addFx(sim, 'pierce', p.x, p.y, best.x, best.y); hurtEnemy(sim, best, Math.round(120 * pm), p.id); }
     }
   } else if (p.hero === 'mage') {
-    if (i === 0) {                                       // Mint Nova
+    if (i === 0) {
       addFx(sim, 'nova', p.x, p.y, undefined, undefined, 180);
       for (const e of sim.enemies) if (dist(e.x, e.y, p.x, p.y) <= 180) {
         hurtEnemy(sim, e, Math.round(25 * pm), p.id);
         applySlow(e, 0.5, 40);
       }
-    } else if (i === 1) {                                // Jawbreaker — seek the biggest cluster
+      for (const n of sim.neutrals) if (dist(n.x, n.y, p.x, p.y) <= 180) hurtNeutral(sim, n, Math.round(25 * pm), p.id);
+    } else if (i === 1) {
       let bx = null, by = null, bestN = -1;
       for (const e of sim.enemies) {
         if (dist(e.x, e.y, p.x, p.y) > 450) continue;
@@ -547,8 +809,8 @@ function castAbility(sim, playerId, i) {
       if (bx !== null) {
         sim.impacts.push({ t: sim.tick + 8, kind: 'boom', x: bx, y: by, r: 110, dmg: Math.round(80 * pm), owner: p.id, air: true });
         addFx(sim, 'meteor', bx, by);
-      } else p.cds[i] = 10;                              // nothing in range — quick refund
-    } else {                                             // Sprinkle of Life
+      } else p.cds[i] = 10;
+    } else {
       addFx(sim, 'heal', p.x, p.y, undefined, undefined, 260);
       const frac = 0.35 * pm;
       for (const q of sim.players.values()) if (q.hero && !q.dead && dist(q.x, q.y, p.x, p.y) <= 260) q.hp = Math.min(q.maxhp, q.hp + q.maxhp * frac);
@@ -556,13 +818,13 @@ function castAbility(sim, playerId, i) {
       for (const b of sim.blds) if (dist(b.x, b.y, p.x, p.y) <= 260) b.hp = Math.min(b.maxhp, b.hp + b.maxhp * frac);
     }
   } else if (p.hero === 'builder') {
-    if (i === 0) {                                       // Quick Fix
+    if (i === 0) {
       addFx(sim, 'heal', p.x, p.y, undefined, undefined, 200);
       for (const b of sim.blds) if (dist(b.x, b.y, p.x, p.y) <= 200) b.hp = Math.min(b.maxhp, b.hp + b.maxhp * 0.5 * pm);
-    } else if (i === 1) {                                // Overclock (her towers only)
+    } else if (i === 1) {
       addFx(sim, 'overclock', p.x, p.y, undefined, undefined, 260);
       for (const b of sim.blds) if (b.owner === p.id && dist(b.x, b.y, p.x, p.y) <= 260) b.boost = Math.round(80 * pm);
-    } else {                                             // Gumdrop Wall
+    } else {
       const b = { id: sim.nextId++, owner: p.id, type: 'wall', x: Math.round(p.x), y: Math.round(p.y),
                   lvl: 1, hp: Math.round(BLD.wall.hp * pm), maxhp: Math.round(BLD.wall.hp * pm),
                   cd: 0, boost: 0, squadCd: 0, until: sim.tick + BLD.wall.temp };
@@ -577,14 +839,10 @@ function applySlow(e, amt, ticks) {
   if (amt >= e.slow) { e.slow = amt; e.slowT = Math.max(e.slowT, ticks); }
 }
 
-/* ---------------- enemy brain ----------------
-   Walk the trail → but anything juicy nearby pulls you off it.
-   Sappers only have eyes for buildings. Lost your mark? Trot
-   back to the trail and keep marching on the castle. */
+/* ---------------- enemy brain (unchanged luring, now with tree-dodging) ---------------- */
 
 function enemyScan(sim, e) {
   const def = ETYPES[e.type];
-  /* taunted? locked on */
   if (e.taunt && e.taunt.t > 0) {
     const p = sim.players.get(e.taunt.id);
     if (p && !p.dead) { e.tgt = { kind: 'hero', id: p.id }; return; }
@@ -616,38 +874,32 @@ function stepEnemy(sim, e) {
   if (e.stun > 0) { e.stun--; return; }
   if (e.slowT > 0) { e.slowT--; if (e.slowT <= 0) e.slow = 0; }
   if (e.taunt) { e.taunt.t--; if (e.taunt.t <= 0) e.taunt = null; }
-  /* sticky fields */
   for (const f of sim.impacts) if (f.kind === 'field' && dist(e.x, e.y, f.x, f.y) <= f.r) applySlow(e, f.slow, 3);
   if (e.cd > 0) e.cd--;
-
-  if (sim.tick % 5 === (e.id % 5)) enemyScan(sim, e);    // stagger the scans
+  if (sim.tick % 5 === (e.id % 5)) enemyScan(sim, e);
 
   const spd = def.spd * (1 - e.slow);
   const t = tgtPos(sim, e.tgt);
-
   if (t) {
-    const tr = t.maxhp && t.type ? BLD[t.type].r : 16;   // building bulk vs critter
+    const tr = t.maxhp && t.type && BLD[t.type] ? BLD[t.type].r : 16;
     const d = dist(e.x, e.y, t.x, t.y);
     const lureR = (e.tgt.kind === 'bld' && t.type === 'wall') ? BLD.wall.lure : def.aggro;
-    if (d > lureR * LEASH_MUL) { e.tgt = null; }         // gave up — back to the trail
+    if (d > lureR * LEASH_MUL) { e.tgt = null; }
     else if (d > def.range + tr) {
-      e.x += ((t.x - e.x) / d) * spd; e.y += ((t.y - e.y) / d) * spd;
+      if (def.air) { e.x += ((t.x - e.x) / d) * spd; e.y += ((t.y - e.y) / d) * spd; }
+      else slideMove(sim.world, e, e.x + ((t.x - e.x) / d) * spd, e.y + ((t.y - e.y) / d) * spd);
       return;
     } else {
       if (e.cd <= 0) { e.cd = 10; dealEnemyHit(sim, e, t); }
       return;
     }
   }
-
-  /* march the trail */
   const path = sim.world.paths[e.path];
   const wp = path[Math.min(e.wp, path.length - 1)];
   const d = dist(e.x, e.y, wp.x, wp.y);
-  if (d < 30) {
-    if (e.wp < path.length - 1) e.wp++;
-  }
+  if (d < 30 && e.wp < path.length - 1) e.wp++;
   const dc = dist(e.x, e.y, CASTLE.x, CASTLE.y);
-  if (dc <= CASTLE.r + def.range + 10) {                 // at the gates
+  if (dc <= CASTLE.r + def.range + 10) {
     if (e.cd <= 0) {
       e.cd = 10;
       sim.castle.hp -= e.dmg * (def.bldOnly ? 1.4 : 1);
@@ -666,7 +918,7 @@ function dealEnemyHit(sim, e, t) {
     const dmg = p.armor > 0 ? Math.round(e.dmg * 0.4) : e.dmg;
     p.hp -= dmg;
     if (p.hp <= 0) {
-      p.dead = true; p.respawn = RESPAWN_T(sim.wave); p.dir = { x: 0, y: 0 };
+      p.dead = true; p.respawn = RESPAWN_T(minutesOf(sim)); p.dir = { x: 0, y: 0 };
       addFx(sim, 'herodown', p.x, p.y);
     }
   } else if (e.tgt.kind === 'ally') {
@@ -682,41 +934,161 @@ function dealEnemyHit(sim, e, t) {
   }
 }
 
-/* ---------------- gummies ---------------- */
+/* ---------------- allies: barracks guards + marching lane creeps ---------------- */
 
 function stepAlly(sim, a) {
-  const home = sim.blds.find((b) => b.id === a.from);
-  if (!home) { a.hp = 0; return; }
+  const def = ATYPES[a.type];
   if (a.cd > 0) a.cd--;
   let t = a.tgt ? sim.enemies.find((e) => e.id === a.tgt) : null;
-  if (t && (t.hp <= 0 || dist(t.x, t.y, home.x, home.y) > GUMMY.leash)) t = null;
+  if (t && t.hp <= 0) t = null;
+
+  if (a.role === 'guard') {
+    const home = sim.blds.find((b) => b.id === a.from);
+    if (!home) { a.hp = 0; return; }
+    if (t && dist(t.x, t.y, home.x, home.y) > def.leash) t = null;
+    if (!t && sim.tick % 5 === (a.id % 5)) {
+      let bd = Infinity;
+      for (const e of sim.enemies) {
+        if (ETYPES[e.type].air) continue;
+        const d = dist(e.x, e.y, a.x, a.y);
+        if (d < bd && d <= def.aggro && dist(e.x, e.y, home.x, home.y) <= def.leash) { bd = d; t = e; }
+      }
+    }
+    a.tgt = t ? t.id : null;
+    if (t) {
+      const d = dist(a.x, a.y, t.x, t.y);
+      if (d > def.range) slideMove(sim.world, a, a.x + ((t.x - a.x) / d) * def.spd, a.y + ((t.y - a.y) / d) * def.spd);
+      else if (a.cd <= 0) {
+        a.cd = def.cd;
+        hurtEnemy(sim, t, Math.round(def.dmg * (1 + 0.25 * ((sim.blds.find((b) => b.id === a.from) || { lvl: 1 }).lvl - 1))), a.owner);
+        addFx(sim, 'hit', t.x, t.y);
+      }
+    } else {
+      const home = sim.blds.find((b) => b.id === a.from);
+      const d = dist(a.x, a.y, home.x, home.y);
+      if (d > 60) slideMove(sim.world, a, a.x + ((home.x - a.x) / d) * def.spd, a.y + ((home.y - a.y) / d) * def.spd);
+    }
+    return;
+  }
+
+  /* lane creep: march the path toward the cavern, brawl whatever's in the way */
   if (!t && sim.tick % 5 === (a.id % 5)) {
     let bd = Infinity;
     for (const e of sim.enemies) {
-      if (ETYPES[e.type].air) continue;                  // gummies can't reach wasps
+      if (ETYPES[e.type].air && def.range < 100) continue;   // only slingers hit wasps
       const d = dist(e.x, e.y, a.x, a.y);
-      if (d < bd && d <= GUMMY.aggro && dist(e.x, e.y, home.x, home.y) <= GUMMY.leash) { bd = d; t = e; }
+      if (d < bd && d <= def.aggro) { bd = d; t = e; }
     }
   }
   a.tgt = t ? t.id : null;
   if (t) {
     const d = dist(a.x, a.y, t.x, t.y);
-    if (d > GUMMY.range) { a.x += ((t.x - a.x) / d) * GUMMY.speed; a.y += ((t.y - a.y) / d) * GUMMY.speed; }
-    else if (a.cd <= 0) {
-      a.cd = GUMMY.cd;
-      hurtEnemy(sim, t, Math.round(GUMMY.dmg * (1 + 0.25 * (home.lvl - 1))), a.owner);
-      addFx(sim, 'hit', t.x, t.y);
+    if (d > def.range) slideMove(sim.world, a, a.x + ((t.x - a.x) / d) * def.spd, a.y + ((t.y - a.y) / d) * def.spd);
+    else if (a.cd <= 0) { a.cd = def.cd; hurtEnemy(sim, t, def.dmg, a.owner); addFx(sim, 'hit', t.x, t.y); }
+    return;
+  }
+  /* no enemies — chew on enemy towers, then the cavern itself */
+  for (const tw of sim.etowers) {
+    if (dist(a.x, a.y, tw.x, tw.y) <= def.range + ETOWER.r) {
+      if (a.cd <= 0) { a.cd = def.cd; hurtETower(sim, tw, def.dmg, a.owner); }
+      return;
     }
-  } else {
-    const d = dist(a.x, a.y, home.x, home.y);
-    if (d > 60) { a.x += ((home.x - a.x) / d) * GUMMY.speed; a.y += ((home.y - a.y) / d) * GUMMY.speed; }
+  }
+  const dh = dist(a.x, a.y, HORDE.x, HORDE.y);
+  if (dh <= HORDE.r + def.range + 10) {
+    if (a.cd <= 0) { a.cd = def.cd; hurtHorde(sim, def.dmg); addFx(sim, 'hit', a.x, a.y); }
+    return;
+  }
+  const path = sim.world.paths[a.path];
+  const wp = path[Math.max(a.wp, 0)];
+  const d = dist(a.x, a.y, wp.x, wp.y);
+  if (d < 30 && a.wp > 0) a.wp--;
+  if (d > 1) { a.x += ((wp.x - a.x) / d) * def.spd; a.y += ((wp.y - a.y) / d) * def.spd; }
+}
+
+/* ---------------- neutral camps ---------------- */
+
+function stepNeutral(sim, n) {
+  const def = NTYPES[n.type];
+  const camp = sim.camps.find((c) => c.id === n.camp);
+  if (n.cd > 0) n.cd--;
+  let t = null;
+  if (n.tgt) {
+    if (n.tgt.kind === 'hero') { const p = sim.players.get(n.tgt.id); t = p && !p.dead ? p : null; }
+    else t = sim.allies.find((a) => a.id === n.tgt.id) || null;
+  }
+  if (t && dist(t.x, t.y, camp.x, camp.y) > CAMP_LEASH) t = null;
+  if (!t && sim.tick % 5 === (n.id % 5)) {
+    let bd = Infinity;
+    for (const p of sim.players.values()) {
+      if (!p.hero || p.dead) continue;
+      const d = dist(p.x, p.y, n.x, n.y);
+      if (d < bd && d <= def.aggro) { bd = d; t = p; n.tgt = { kind: 'hero', id: p.id }; }
+    }
+    for (const a of sim.allies) {
+      const d = dist(a.x, a.y, n.x, n.y);
+      if (d < bd && d <= def.aggro) { bd = d; t = a; n.tgt = { kind: 'ally', id: a.id }; }
+    }
+  }
+  if (!t) {
+    n.tgt = null;
+    const d = dist(n.x, n.y, camp.x, camp.y);
+    if (d > 70) {
+      slideMove(sim.world, n, n.x + ((camp.x - n.x) / d) * def.spd, n.y + ((camp.y - n.y) / d) * def.spd);
+      n.hp = Math.min(n.maxhp, n.hp + n.maxhp * 0.01);   // shrug it off on the way home
+    }
+    return;
+  }
+  const d = dist(n.x, n.y, t.x, t.y);
+  if (d > def.range) slideMove(sim.world, n, n.x + ((t.x - n.x) / d) * def.spd, n.y + ((t.y - n.y) / d) * def.spd);
+  else if (n.cd <= 0) {
+    n.cd = 10;
+    addFx(sim, 'hit', t.x, t.y);
+    if (n.tgt.kind === 'hero') {
+      const dmg = t.armor > 0 ? Math.round(def.dmg * 0.4) : def.dmg;
+      t.hp -= dmg;
+      if (t.hp <= 0) { t.dead = true; t.respawn = RESPAWN_T(minutesOf(sim)); t.dir = { x: 0, y: 0 }; addFx(sim, 'herodown', t.x, t.y); }
+    } else {
+      t.hp -= def.dmg;
+      if (t.hp <= 0) sim.allies = sim.allies.filter((a) => a.id !== t.id);
+    }
   }
 }
 
-/* ---------------- towers ---------------- */
+/* ---------------- structures ---------------- */
+
+function stepETower(sim, tw) {
+  if (tw.cd > 0) { tw.cd--; return; }
+  let best = null, bd = Infinity, kind = null;
+  for (const a of sim.allies) { const d = dist(a.x, a.y, tw.x, tw.y); if (d <= ETOWER.range && d < bd) { bd = d; best = a; kind = 'ally'; } }
+  for (const p of sim.players.values()) {
+    if (!p.hero || p.dead) continue;
+    const d = dist(p.x, p.y, tw.x, tw.y);
+    if (d <= ETOWER.range && d < bd) { bd = d; best = p; kind = 'hero'; }
+  }
+  for (const b of sim.blds) { const d = dist(b.x, b.y, tw.x, tw.y); if (d <= ETOWER.range && d < bd) { bd = d; best = b; kind = 'bld'; } }
+  if (!best) return;
+  tw.cd = ETOWER.cd;
+  addFx(sim, 'etzap', tw.x, tw.y, best.x, best.y);
+  if (kind === 'hero') {
+    const dmg = best.armor > 0 ? Math.round(ETOWER.dmg * 0.4) : ETOWER.dmg;
+    best.hp -= dmg;
+    if (best.hp <= 0) { best.dead = true; best.respawn = RESPAWN_T(minutesOf(sim)); best.dir = { x: 0, y: 0 }; addFx(sim, 'herodown', best.x, best.y); }
+  } else if (kind === 'ally') {
+    best.hp -= ETOWER.dmg;
+    if (best.hp <= 0) sim.allies = sim.allies.filter((a) => a.id !== best.id);
+  } else {
+    best.hp -= ETOWER.dmg;
+    if (best.hp <= 0) {
+      sim.blds = sim.blds.filter((b) => b.id !== best.id);
+      sim.allies = sim.allies.filter((a) => a.from !== best.id);
+      addFx(sim, 'crumble', best.x, best.y);
+    }
+  }
+}
 
 function stepBld(sim, b) {
-  if (b.until && sim.tick >= b.until) { b.hp = 0; return; }        // walls melt away
+  if (b.until && sim.tick >= b.until) { b.hp = 0; return; }
   const def = BLD[b.type];
   if (b.boost > 0) b.boost--;
   if (b.type === 'barracks') {
@@ -740,7 +1112,7 @@ function stepBld(sim, b) {
   let best = null, bd = Infinity;
   for (const e of sim.enemies) {
     const air = !!ETYPES[e.type].air;
-    if (def.air ? !air : air) continue;                  // AA hits fliers, others hit ground
+    if (def.air ? !air : air) continue;
     const d = dist(e.x, e.y, b.x, b.y);
     if (def.minRange && d < def.minRange) continue;
     if (d <= range && d < bd) { bd = d; best = e; }
@@ -757,21 +1129,21 @@ function stepBld(sim, b) {
   }
 }
 
-/* ---------------- the master tick ---------------- */
+/* ---------------- the master tick: pure real time ---------------- */
 
 function stepSim(sim) {
   sim.tick++;
   if (sim.over) return;
 
   if (sim.phase === 'pick') {
-    if (--sim.pickLeft <= 0) {                           // failsafe: auto-assign stragglers
+    if (--sim.pickLeft <= 0) {
       for (const p of sim.players.values()) if (!p.hero) pickHero(sim, p.id, HERO_IDX[p.seat % HERO_IDX.length]);
-      if (sim.phase === 'pick') startPrep(sim, PREP_FIRST);
+      if (sim.phase === 'pick') startPlay(sim);
     }
     return;
   }
 
-  /* heroes move in both phases (joystick in waves, tap-to-walk in prep) */
+  /* heroes */
   for (const p of sim.players.values()) {
     if (!p.hero) continue;
     if (p.dead) {
@@ -785,76 +1157,91 @@ function stepSim(sim) {
     if (p.armor > 0) p.armor--;
     const hdR = heroDef(p);
     if (hdR.regen && p.hp < p.maxhp) p.hp = Math.min(p.maxhp, p.hp + p.maxhp * hdR.regen);
+    if (dist(p.x, p.y, CASTLE.x, CASTLE.y) < FOUNTAIN_R && p.hp < p.maxhp) {
+      p.hp = Math.min(p.maxhp, p.hp + p.maxhp * 0.0025);   // home-fountain frosting
+    }
     for (let i = 0; i < 3; i++) if (p.cds[i] > 0) p.cds[i]--;
     const spd = speedOf(p);
-    if (sim.phase === 'wave' && (p.dir.x || p.dir.y)) {
+    if (p.dir.x || p.dir.y) {
       const m = Math.hypot(p.dir.x, p.dir.y) || 1;
-      p.x += (p.dir.x / m) * spd; p.y += (p.dir.y / m) * spd;
+      slideMove(sim.world, p, p.x + (p.dir.x / m) * spd, p.y + (p.dir.y / m) * spd);
       p.moveTo = null;
     } else if (p.moveTo) {
       const d = dist(p.x, p.y, p.moveTo.x, p.moveTo.y);
       if (d < spd * 1.5) p.moveTo = null;
-      else { p.x += ((p.moveTo.x - p.x) / d) * spd; p.y += ((p.moveTo.y - p.y) / d) * spd; }
+      else slideMove(sim.world, p, p.x + ((p.moveTo.x - p.x) / d) * spd, p.y + ((p.moveTo.y - p.y) / d) * spd);
     }
     p.x = clamp(p.x, -WORLD_W, WORLD_W);
     p.y = clamp(p.y, -WORLD_H, WORLD_H);
-    if (p.rx === undefined || dist(p.x, p.y, p.rx, p.ry) > FOG_CELL * 0.4) {
-      p.rx = p.x; p.ry = p.y;
-      revealCircle(sim, p.x, p.y, REVEAL_R);
-    }
     const dc = dist(p.x, p.y, CASTLE.x, CASTLE.y);
     if (dc < CASTLE.r + 20 && dc > 0) {
       const k = (CASTLE.r + 20) / dc;
       p.x = CASTLE.x + (p.x - CASTLE.x) * k;
       p.y = CASTLE.y + (p.y - CASTLE.y) * k;
     }
-    /* hero auto-attack during waves */
-    if (sim.phase === 'wave' && (!p.atkCd || --p.atkCd <= 0)) {
+    if (p.rx === undefined || dist(p.x, p.y, p.rx, p.ry) > FOG_CELL * 0.4) {
+      p.rx = p.x; p.ry = p.y;
+      revealCircle(sim, p.x, p.y, REVEAL_R);
+    }
+    if (sim.tick % 10 === 0) p.coins += COIN_TRICKLE;
+    /* auto-attack: enemies first, then neutrals, then enemy structures */
+    if (!p.atkCd || --p.atkCd <= 0) {
       const hd = heroDef(p);
-      let best = null, bd = Infinity;
+      let best = null, bd = Infinity, kind = null;
       for (const e of sim.enemies) {
         if (ETYPES[e.type].air && !hd.hitAir) continue;
         const d = dist(e.x, e.y, p.x, p.y);
-        if (d <= hd.range + 14 && d < bd) { bd = d; best = e; }
+        if (d <= hd.range + 14 && d < bd) { bd = d; best = e; kind = 'enemy'; }
       }
+      if (!best) for (const n of sim.neutrals) {
+        const d = dist(n.x, n.y, p.x, p.y);
+        if (d <= hd.range + 14 && d < bd) { bd = d; best = n; kind = 'neutral'; }
+      }
+      if (!best) for (const tw of sim.etowers) {
+        const d = dist(tw.x, tw.y, p.x, p.y);
+        if (d <= hd.range + ETOWER.r && d < bd) { bd = d; best = tw; kind = 'etower'; }
+      }
+      if (!best && dist(p.x, p.y, HORDE.x, HORDE.y) <= hd.range + HORDE.r + 10) { best = sim.horde; kind = 'horde'; }
       if (best) {
         p.atkCd = hd.cd;
-        addFx(sim, hd.range > 100 ? 'pew' : 'slash', p.x, p.y, best.x, best.y);
-        if (hd.splash) {
-          for (const e of sim.enemies) if (dist(e.x, e.y, best.x, best.y) <= hd.splash) hurtEnemy(sim, e, dmgOf(p), p.id);
-        } else hurtEnemy(sim, best, dmgOf(p), p.id);
+        addFx(sim, hd.range > 100 ? 'pew' : 'slash', p.x, p.y, best.x !== undefined ? best.x : HORDE.x, best.y !== undefined ? best.y : HORDE.y);
+        const dmg = dmgOf(p);
+        if (kind === 'enemy') {
+          if (hd.splash) { for (const e of sim.enemies) if (dist(e.x, e.y, best.x, best.y) <= hd.splash) hurtEnemy(sim, e, dmg, p.id); }
+          else hurtEnemy(sim, best, dmg, p.id);
+        } else if (kind === 'neutral') hurtNeutral(sim, best, dmg, p.id);
+        else if (kind === 'etower') hurtETower(sim, best, dmg, p.id);
+        else hurtHorde(sim, dmg);
       }
     }
   }
 
-  if (sim.phase === 'prep') {
-    const anyone = [...sim.players.values()].some((p) => p.hero && p.connected);
-    const allReady = anyone && [...sim.players.values()].every((p) => !p.hero || !p.connected || p.ready);
-    if (--sim.prepLeft <= 0 || allReady) {
-      sim.phase = 'wave';
-      sim.wave++;
-      sim.stats.waveReached = sim.wave;
-      buildWave(sim, sim.wave);
-      addFx(sim, 'horn', HORDE.x, HORDE.y);
-    }
-    return;
+  /* both bases spawn a group of 10, every 20 seconds, forever */
+  if (--sim.spawnT <= 0) {
+    sim.spawnT = SPAWN_EVERY;
+    spawnEnemyGroup(sim);
+    spawnAllyGroup(sim);
   }
-
-  /* ---- wave phase ---- */
-  for (const s of sim.spawnQueue) s.delay--;
-  while (sim.spawnQueue.length && sim.spawnQueue[0].delay <= 0) {
-    const s = sim.spawnQueue.shift();
-    spawnEnemy(sim, s.type, s.path);
+  if (--sim.eheroT <= 0) {
+    sim.eheroT = EHERO_EVERY;
+    spawnEnemyHero(sim);
+  }
+  for (const c of sim.camps) {
+    if (c.respawnT > 0 && --c.respawnT <= 0) fillCamp(sim, c);
+    else if (c.respawnT <= 0 && !sim.neutrals.some((n) => n.camp === c.id)) c.respawnT = CAMP_RESPAWN;
   }
 
   for (const e of sim.enemies) stepEnemy(sim, e);
   sim.enemies = sim.enemies.filter((e) => e.hp > 0);
   for (const a of sim.allies) stepAlly(sim, a);
   sim.allies = sim.allies.filter((a) => a.hp > 0);
+  for (const n of sim.neutrals) stepNeutral(sim, n);
+  sim.neutrals = sim.neutrals.filter((n) => n.hp > 0);
+  for (const tw of sim.etowers) stepETower(sim, tw);
+  sim.etowers = sim.etowers.filter((tw) => tw.hp > 0);
   for (const b of sim.blds) stepBld(sim, b);
   sim.blds = sim.blds.filter((b) => b.hp > 0);
 
-  /* scheduled explosions + expiring fields */
   for (const im of sim.impacts) {
     if (im.kind === 'boom' && sim.tick >= im.t) {
       addFx(sim, 'boom', im.x, im.y, undefined, undefined, im.r);
@@ -869,20 +1256,7 @@ function stepSim(sim) {
   sim.impacts = sim.impacts.filter((im) => !im.done);
   sim.enemies = sim.enemies.filter((e) => e.hp > 0);
 
-  if (sim.castle.hp <= 0) { sim.castle.hp = 0; sim.over = 'lose'; addFx(sim, 'crumble', CASTLE.x, CASTLE.y); return; }
-
-  /* wave cleared? */
-  if (!sim.spawnQueue.length && !sim.enemies.length) {
-    for (const p of sim.players.values()) if (p.hero) {
-      p.coins += WAVE_BONUS(sim.wave);
-      if (p.dead) { p.dead = false; p.respawn = 0; }
-      p.hp = p.maxhp;                                    // heroes patch up between waves
-    }
-    for (const b of sim.blds) b.hp = b.maxhp;            // towers too — the castle doesn't
-    addFx(sim, 'clear', CASTLE.x, CASTLE.y);
-    if (sim.wave >= LAST_WAVE) { sim.over = 'win'; return; }
-    startPrep(sim, PREP_T);
-  }
+  if (sim.castle.hp <= 0) { sim.castle.hp = 0; sim.over = 'lose'; addFx(sim, 'crumble', CASTLE.x, CASTLE.y); }
 }
 
 /* ================= snapshot (host → phones) ================= */
@@ -891,13 +1265,16 @@ function snapshot(sim) {
   const pl = [];
   for (const id of sim.order) {
     const p = sim.players.get(id);
+    const nextXp = p.lvl >= 10 ? 1 : XP_LVL[p.lvl - 1];
+    const prevXp = p.lvl <= 1 ? 0 : XP_LVL[p.lvl - 2];
     pl.push([
       p.seat, p.hero ? HERO_IDX.indexOf(p.hero) : -1,
       Math.round(p.x), Math.round(p.y), Math.round(p.hp), p.maxhp,
       p.dead ? Math.max(1, p.respawn) : 0, p.coins,
       p.cds[0], p.cds[1], p.cds[2],
-      p.ready ? 1 : 0, p.kills, p.armor > 0 ? 1 : 0,
+      p.lvl, p.kills, p.armor > 0 ? 1 : 0,
       p.up.dmg, p.up.hp, p.up.spd, p.up.pow,
+      p.lvl >= 10 ? 100 : Math.round(((p.xp - prevXp) / (nextXp - prevXp)) * 100),
     ]);
   }
   const e = sim.enemies.map((n) => [
@@ -905,24 +1282,28 @@ function snapshot(sim) {
     Math.round((n.hp / n.maxhp) * 100), n.stun > 0 ? 1 : 0, n.slow > 0 ? 1 : 0,
   ]);
   const a = sim.allies.map((n) => {
-    const p = sim.players.get(n.owner);
-    return [n.id, p ? p.seat : 0, Math.round(n.x), Math.round(n.y), Math.round((n.hp / n.maxhp) * 100)];
+    const p = n.owner ? sim.players.get(n.owner) : null;
+    return [n.id, p ? p.seat : -1, ATYPE.indexOf(n.type), Math.round(n.x), Math.round(n.y), Math.round((n.hp / n.maxhp) * 100)];
   });
   const b = sim.blds.map((n) => {
     const p = sim.players.get(n.owner);
     return [n.id, p ? p.seat : 0, BTYPE.indexOf(n.type), n.x, n.y, n.lvl,
             Math.round((n.hp / n.maxhp) * 100), n.boost > 0 ? 1 : 0];
   });
+  const eb = sim.etowers.map((t) => [t.id, t.x, t.y, Math.round((t.hp / t.maxhp) * 100)]);
+  const nn = sim.neutrals.map((n) => [n.id, NTYPE.indexOf(n.type), Math.round(n.x), Math.round(n.y), Math.round((n.hp / n.maxhp) * 100)]);
   const fields = sim.impacts.filter((im) => im.kind === 'field').map((im) => [im.x, im.y, im.r]);
   const snap = {
-    k: 'snap', n: sim.tick, ph: sim.phase, w: sim.wave,
-    pt: sim.phase === 'prep' ? sim.prepLeft : (sim.phase === 'pick' ? sim.pickLeft : 0),
+    k: 'snap', n: sim.tick, ph: sim.phase,
+    pt: sim.phase === 'pick' ? sim.pickLeft : 0,
+    clock: Math.floor(sim.tick / 10),
     c: [Math.round(sim.castle.hp), sim.castle.max],
-    left: sim.spawnQueue.length + sim.enemies.length,
-    ap: sim.activePaths,
-    pl, e, a, b, fields, fx: sim.fx,
+    hb: [Math.round(sim.horde.hp), sim.horde.max],
+    ap: [0, 1, 2],
+    pl, e, a, b, eb, nn, fields, fx: sim.fx,
   };
   snap.chit = sim.tick - sim.castle.hitAt < 12 ? 1 : 0;
+  snap.hhit = sim.tick - sim.horde.hitAt < 12 ? 1 : 0;
   snap.fogV = sim.fogV;
   snap.fog = packFog(sim.fog);
   if (sim.over) snap.over = sim.over;
@@ -1000,45 +1381,172 @@ function drawTerrain(g, world, activePaths, now) {
     }
   }
 
-  /* the Rock Candy Cavern — the horde's corner base */
-  const hb = world.horde, hot = activePaths && activePaths.length > 0;
-  g.save(); g.translate(hb.x, hb.y);
-  g.fillStyle = 'rgba(40,20,50,.25)';
-  g.beginPath(); g.ellipse(0, hb.r * 0.75, hb.r * 1.5, hb.r * 0.5, 0, 0, Math.PI * 2); g.fill();
-  g.fillStyle = '#4b3a58'; g.strokeStyle = '#332540'; g.lineWidth = 8;
-  g.beginPath(); g.arc(0, 0, hb.r * 1.25, Math.PI, 0); g.lineTo(hb.r * 1.25, hb.r * 0.7);
-  g.lineTo(-hb.r * 1.25, hb.r * 0.7); g.closePath(); g.fill(); g.stroke();
-  g.fillStyle = '#6b4f86';                                 /* rock-candy crystals on top */
-  for (const [cx, cy, cw, ch] of [[-90, -70, 40, 90], [-30, -110, 44, 120], [40, -85, 38, 95], [95, -45, 30, 70]]) {
-    g.beginPath(); g.moveTo(cx - cw / 2, cy + ch / 2); g.lineTo(cx, cy - ch / 2); g.lineTo(cx + cw / 2, cy + ch / 2);
-    g.closePath(); g.fill(); g.stroke();
+  /* neutral camp clearings */
+  for (const c of world.camps) {
+    g.fillStyle = '#cbb98a';
+    g.beginPath(); g.arc(c.x, c.y, 120, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = 'rgba(122,77,33,.4)'; g.lineWidth = 6; g.setLineDash([14, 12]);
+    g.beginPath(); g.arc(c.x, c.y, 120, 0, Math.PI * 2); g.stroke(); g.setLineDash([]);
+    g.fillStyle = 'rgba(122,77,33,.5)';
+    for (let i = 0; i < 3; i++) { g.beginPath(); g.arc(c.x - 30 + i * 30, c.y + 70, 5, 0, Math.PI * 2); g.fill(); }
   }
-  const mouth = 0.55 + (hot ? Math.sin(now * 0.004) * 0.08 : 0);
-  g.fillStyle = hot ? '#2a0f38' : '#241b2e';               /* cave mouth */
-  g.beginPath(); g.ellipse(0, hb.r * 0.45, hb.r * mouth, hb.r * 0.55, 0, Math.PI, 0); g.fill();
-  if (hot) {
-    g.strokeStyle = '#c95cff'; g.lineWidth = 7;
-    g.setLineDash([16, 12]); g.lineDashOffset = -(now * 0.03) % 28;
-    g.beginPath(); g.ellipse(0, hb.r * 0.45, hb.r * mouth + 14, hb.r * 0.62, 0, Math.PI, 0); g.stroke();
-    g.setLineDash([]);
+
+  /* elevation ridges + tree thickets — the walls of the wilds */
+  for (const o of world.obstacles) {
+    g.save(); g.translate(o.x, o.y);
+    if (o.t === 'rock') {
+      g.fillStyle = 'rgba(40,20,50,.2)';
+      g.beginPath(); g.ellipse(0, 30, 52, 14, 0, 0, Math.PI * 2); g.fill();
+      g.strokeStyle = '#4d5866'; g.lineWidth = 5;
+      g.fillStyle = '#7d8a99';
+      g.beginPath();
+      g.moveTo(-50, 34); g.lineTo(-40, -22 - o.v * 8); g.lineTo(-12, -44 - o.v * 6);
+      g.lineTo(18, -26 - o.v * 8); g.lineTo(30, -40); g.lineTo(50, 34);
+      g.closePath(); g.fill(); g.stroke();
+      g.fillStyle = '#a8b4c2';                            /* sunny top faces */
+      g.beginPath(); g.moveTo(-40, -22 - o.v * 8); g.lineTo(-12, -44 - o.v * 6); g.lineTo(-6, -20); g.closePath(); g.fill();
+      g.strokeStyle = '#5b6672'; g.lineWidth = 3;
+      g.beginPath(); g.moveTo(-8, 30); g.lineTo(-2, 0); g.stroke();
+    } else {
+      g.fillStyle = 'rgba(40,20,50,.2)';
+      g.beginPath(); g.ellipse(4, 34, 44, 12, 0, 0, Math.PI * 2); g.fill();
+      const trees = o.v === 0 ? [[-22, 6, 0.85], [16, 12, 1]] : o.v === 1 ? [[0, 8, 1.1]] : [[-24, 12, 0.8], [4, -2, 0.9], [26, 14, 0.85]];
+      for (const [tx, ty, sc] of trees) {
+        g.save(); g.translate(tx, ty); g.scale(sc, sc);
+        g.strokeStyle = '#1f5c33'; g.lineWidth = 3.5;
+        g.fillStyle = '#7a4d21';
+        rr(g, -5, 16, 10, 14, 3); g.fill(); g.stroke();
+        g.fillStyle = '#2e8b4f';
+        for (const [ly, lw] of [[16, 30], [2, 24], [-12, 17]]) {
+          g.beginPath(); g.moveTo(-lw, ly); g.lineTo(0, ly - 26); g.lineTo(lw, ly); g.closePath(); g.fill(); g.stroke();
+        }
+        g.fillStyle = '#fff';                              /* snow-frosting caps */
+        g.beginPath(); g.arc(0, -32, 5, 0, Math.PI * 2); g.fill();
+        g.restore();
+      }
+    }
+    g.restore();
   }
-  /* angry eyes glowing in the dark */
-  g.fillStyle = hot ? '#ff5c8a' : '#8a6aa0';
-  g.beginPath(); g.arc(-22, hb.r * 0.28, 7, 0, Math.PI * 2); g.fill();
-  g.beginPath(); g.arc(22, hb.r * 0.28, 7, 0, Math.PI * 2); g.fill();
-  /* horde banner */
-  g.strokeStyle = '#332540'; g.lineWidth = 7;
-  g.beginPath(); g.moveTo(hb.r * 1.1, hb.r * 0.7); g.lineTo(hb.r * 1.1, -hb.r * 1.1); g.stroke();
-  g.fillStyle = '#5b2a63'; g.strokeStyle = '#332540'; g.lineWidth = 4;
-  g.beginPath(); g.moveTo(hb.r * 1.1, -hb.r * 1.1); g.lineTo(hb.r * 1.75, -hb.r * 0.92); g.lineTo(hb.r * 1.1, -hb.r * 0.74);
-  g.closePath(); g.fill(); g.stroke();
-  face(g, hb.r * 1.32, -hb.r * 0.94, 0.9, 'angry');
-  g.restore();
 
   for (const pr of world.props) {
     g.font = `${pr.s}px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
     g.fillText(pr.e, pr.x, pr.y);
   }
+}
+
+/* the Rock Candy Cavern — the horde's base. Smash it to WIN */
+function drawHordeBase(g, x, y, hp, max, hitRecently, now) {
+  const r = HORDE.r;
+  g.save(); g.translate(x, y);
+  g.fillStyle = 'rgba(40,20,50,.25)';
+  g.beginPath(); g.ellipse(0, r * 0.75, r * 1.5, r * 0.5, 0, 0, Math.PI * 2); g.fill();
+  if (hitRecently && Math.floor(now / 120) % 2 === 0) {
+    g.strokeStyle = '#ffd93d'; g.lineWidth = 8;
+    g.beginPath(); g.arc(0, 0, r * 1.5, 0, Math.PI * 2); g.stroke();
+  }
+  g.fillStyle = '#4b3a58'; g.strokeStyle = '#332540'; g.lineWidth = 8;
+  g.beginPath(); g.arc(0, 0, r * 1.25, Math.PI, 0); g.lineTo(r * 1.25, r * 0.7);
+  g.lineTo(-r * 1.25, r * 0.7); g.closePath(); g.fill(); g.stroke();
+  g.fillStyle = '#6b4f86';
+  for (const [cx, cy, cw, ch] of [[-90, -70, 40, 90], [-30, -110, 44, 120], [40, -85, 38, 95], [95, -45, 30, 70]]) {
+    g.beginPath(); g.moveTo(cx - cw / 2, cy + ch / 2); g.lineTo(cx, cy - ch / 2); g.lineTo(cx + cw / 2, cy + ch / 2);
+    g.closePath(); g.fill(); g.stroke();
+  }
+  const mouth = 0.55 + Math.sin(now * 0.004) * 0.08;
+  g.fillStyle = '#2a0f38';
+  g.beginPath(); g.ellipse(0, r * 0.45, r * mouth, r * 0.55, 0, Math.PI, 0); g.fill();
+  g.strokeStyle = '#c95cff'; g.lineWidth = 7;
+  g.setLineDash([16, 12]); g.lineDashOffset = -(now * 0.03) % 28;
+  g.beginPath(); g.ellipse(0, r * 0.45, r * mouth + 14, r * 0.62, 0, Math.PI, 0); g.stroke();
+  g.setLineDash([]);
+  g.fillStyle = '#ff5c8a';
+  g.beginPath(); g.arc(-22, r * 0.28, 7, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.arc(22, r * 0.28, 7, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = '#332540'; g.lineWidth = 7;
+  g.beginPath(); g.moveTo(r * 1.1, r * 0.7); g.lineTo(r * 1.1, -r * 1.1); g.stroke();
+  g.fillStyle = '#5b2a63'; g.strokeStyle = '#332540'; g.lineWidth = 4;
+  g.beginPath(); g.moveTo(r * 1.1, -r * 1.1); g.lineTo(r * 1.75, -r * 0.92); g.lineTo(r * 1.1, -r * 0.74);
+  g.closePath(); g.fill(); g.stroke();
+  face(g, r * 1.32, -r * 0.94, 0.9, 'angry');
+  /* base health */
+  const frac = clamp(hp / max, 0, 1);
+  g.fillStyle = 'rgba(0,0,0,.45)'; rr(g, -90, r * 0.95, 180, 16, 8); g.fill();
+  g.fillStyle = '#c95cff';
+  if (frac > 0.02) { rr(g, -90, r * 0.95, 180 * frac, 16, 8); g.fill(); }
+  g.strokeStyle = '#fff'; g.lineWidth = 3; rr(g, -90, r * 0.95, 180, 16, 8); g.stroke();
+  g.restore();
+}
+
+/* an enemy lane tower: a jagged crystal spire with a glowing eye */
+function drawETower(g, row, z, now) {
+  const [, x, y, hpPct] = row;
+  const k = upscale(z);
+  g.save(); g.translate(x, y); g.scale(k, k);
+  g.fillStyle = 'rgba(40,20,50,.22)';
+  g.beginPath(); g.ellipse(0, 32, 34, 11, 0, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = '#332540'; g.lineWidth = 3.5;
+  g.fillStyle = '#4b3a58';
+  g.beginPath(); g.moveTo(-24, 32); g.lineTo(-14, -18); g.lineTo(14, -18); g.lineTo(24, 32); g.closePath();
+  g.fill(); g.stroke();
+  g.fillStyle = '#6b4f86';
+  g.beginPath(); g.moveTo(-16, -16); g.lineTo(-8, -46); g.lineTo(0, -16); g.closePath(); g.fill(); g.stroke();
+  g.beginPath(); g.moveTo(-2, -16); g.lineTo(10, -52); g.lineTo(18, -16); g.closePath(); g.fill(); g.stroke();
+  const pulse = 0.75 + Math.sin(now * 0.006) * 0.25;
+  g.fillStyle = `rgba(255,92,138,${pulse})`;
+  g.beginPath(); g.arc(0, 2, 8, 0, Math.PI * 2); g.fill(); g.stroke();
+  hpBar(g, 0, 38, 56, hpPct / 100, '#c95cff');
+  g.restore();
+}
+
+/* neutral creeps: wild things with faces, guarding their patch */
+function drawNeutral(g, row, z, now) {
+  const [id, tIdx, x, y, hpPct] = row;
+  const type = NTYPE[tIdx];
+  const k = upscale(z);
+  const w = now * 0.01 + id;
+  g.save(); g.translate(x, y); g.scale(k, k);
+  const ink = '#3a2038';
+  g.strokeStyle = ink; g.lineWidth = 2.6;
+  g.fillStyle = 'rgba(40,20,50,.18)';
+  g.beginPath(); g.ellipse(0, 12, 12, 5, 0, 0, Math.PI * 2); g.fill();
+  if (type === 'wolf') {
+    g.rotate(Math.sin(w * 3) * 0.06);
+    g.fillStyle = '#f088a8';
+    g.beginPath(); g.ellipse(0, 2, 13, 9, 0, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.beginPath(); g.moveTo(-10, -6); g.lineTo(-13, -15); g.lineTo(-5, -9); g.closePath(); g.fill(); g.stroke();
+    g.beginPath(); g.moveTo(2, -8); g.lineTo(6, -16); g.lineTo(9, -7); g.closePath(); g.fill(); g.stroke();
+    g.strokeStyle = '#d16388'; g.lineWidth = 2.4; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(12, 4); g.quadraticCurveTo(20, 0, 19, -7); g.stroke();
+    g.strokeStyle = ink;
+    face(g, -1, -2, 0.9, 'angry');
+  } else if (type === 'bear') {
+    g.rotate(Math.sin(w * 2) * 0.05);
+    g.fillStyle = '#b07a45';
+    g.beginPath(); g.arc(-6.5, -9, 4, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.beginPath(); g.arc(6.5, -9, 4, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.beginPath(); g.arc(0, 0, 12, Math.PI, 0); g.lineTo(12, 8); g.quadraticCurveTo(0, 13, -12, 8);
+    g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#8a5a2b';
+    g.beginPath(); g.ellipse(0, 5, 6, 4.5, 0, 0, Math.PI * 2); g.fill();
+    face(g, 0, -3, 1, 'angry');
+  } else {
+    /* Elder Rockjaw: mossy boulder patriarch */
+    g.rotate(Math.sin(w) * 0.03);
+    g.fillStyle = '#8a9484';
+    g.beginPath(); g.arc(0, -2, 18, Math.PI, 0);
+    g.lineTo(18, 11); g.quadraticCurveTo(0, 17, -18, 11); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#5f7a52';
+    g.beginPath(); g.arc(-8, -14, 6, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(7, -16, 5, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#a3ab9c';
+    g.beginPath(); g.arc(-20, 6 + Math.sin(w * 1.4) * 3, 6, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.beginPath(); g.arc(20, 6 - Math.sin(w * 1.4) * 3, 6, 0, Math.PI * 2); g.fill(); g.stroke();
+    face(g, 0, -4, 1.25, 'angry');
+    g.fillStyle = '#fff';
+    g.beginPath(); g.moveTo(-6, 6); g.lineTo(-3, 10); g.lineTo(0, 6); g.lineTo(3, 10); g.lineTo(6, 6); g.stroke();
+  }
+  if (hpPct < 100) hpBar(g, 0, 16, 28, hpPct / 100, '#e8b06a');
+  g.restore();
 }
 
 /* the Great Gingerbread Castle — the team's corner base */
@@ -1295,6 +1803,37 @@ function drawEnemy(g, row, z, now) {
     g.beginPath(); g.arc(-19, 6 + Math.sin(w * 2) * 3, 6, 0, Math.PI * 2); g.fill(); g.stroke();
     g.beginPath(); g.arc(19, 6 - Math.sin(w * 2) * 3, 6, 0, Math.PI * 2); g.fill(); g.stroke();
     face(g, 0, -4, 1.15, 'angry');
+  } else if (type === 'eknight') {
+    /* Sour Sergeant — armored lime brute with a cleaver */
+    g.rotate(Math.sin(w * 3) * 0.05);
+    g.fillStyle = '#9bc23c';
+    g.beginPath(); g.arc(0, 0, 14, Math.PI, 0); g.lineTo(14, 9); g.quadraticCurveTo(0, 14, -14, 9);
+    g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#5b2a63';                               /* horde helm */
+    g.beginPath(); g.arc(0, -6, 11, Math.PI, 0); g.lineTo(11, -3); g.lineTo(-11, -3); g.closePath(); g.fill(); g.stroke();
+    g.beginPath(); g.moveTo(-11, -5); g.lineTo(-16, -14); g.lineTo(-8, -8); g.closePath(); g.fill(); g.stroke();
+    g.beginPath(); g.moveTo(11, -5); g.lineTo(16, -14); g.lineTo(8, -8); g.closePath(); g.fill(); g.stroke();
+    face(g, 0, 1, 1, 'angry');
+    g.fillStyle = '#8b8f99';                               /* cleaver */
+    g.beginPath(); g.moveTo(14, 4); g.lineTo(26, -6); g.lineTo(26, 2); g.lineTo(17, 8); g.closePath(); g.fill(); g.stroke();
+  } else if (type === 'earcher') {
+    /* Licorice Sniper — hooded, long black bow */
+    g.rotate(Math.sin(w * 3) * 0.06);
+    g.fillStyle = '#3d3d47';
+    g.beginPath(); g.arc(0, 2, 11, Math.PI, 0); g.lineTo(11, 9); g.quadraticCurveTo(0, 13, -11, 9);
+    g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#55555f';
+    g.beginPath(); g.moveTo(-10, -2); g.lineTo(0, -20); g.lineTo(10, -2); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#ff5c8a';                               /* glowing eyes in the hood */
+    g.beginPath(); g.arc(-3.5, -1, 2, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(3.5, -1, 2, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#1c1c22'; g.lineWidth = 2.6;
+    g.beginPath(); g.arc(13, 0, 11, -Math.PI * 0.45, Math.PI * 0.45); g.stroke();
+    g.strokeStyle = '#fff'; g.lineWidth = 1.2;
+    g.beginPath();
+    g.moveTo(13 + Math.cos(-Math.PI * 0.45) * 11, Math.sin(-Math.PI * 0.45) * 11);
+    g.lineTo(13 + Math.cos(Math.PI * 0.45) * 11, Math.sin(Math.PI * 0.45) * 11);
+    g.stroke();
   } else {
     /* the Rock Candy Colossus — crystal crown, very cross */
     g.rotate(Math.sin(w * 0.8) * 0.03);
@@ -1315,6 +1854,12 @@ function drawEnemy(g, row, z, now) {
   }
 
   if (stun) { g.font = '13px sans-serif'; g.textAlign = 'center'; g.fillText('💫', 0, -22); }
+  if (def.hero) {
+    g.fillStyle = '#ff8fb3'; g.font = 'bold 12px Fredoka, sans-serif'; g.textAlign = 'center';
+    g.strokeStyle = 'rgba(0,0,0,.6)'; g.lineWidth = 3;
+    g.strokeText(def.label, 0, -26);
+    g.fillText(def.label, 0, -26);
+  }
   if (hpPct < 100) hpBar(g, 0, def.boss ? 24 : 17, def.boss ? 44 : 28, hpPct / 100, '#c95cff');
   g.restore();
 }
@@ -1430,17 +1975,20 @@ function drawHeroRow(g, row, seats, z, now, isMe) {
 
 /* ---------------- gummy fighters: tiny bears in the owner's color ---------------- */
 
-function drawGummy(g, row, seats, z) {
-  const [id, seat, x, y, hpPct] = row;
-  const s = seats[seat];
-  const color = s ? s.color : '#cccccc';
+function drawAlly(g, row, seats, z, now) {
+  const [id, seat, atIdx, x, y, hpPct] = row;
+  const type = ATYPE[atIdx];
+  const s = seat >= 0 && seats[seat] ? seats[seat] : null;
+  const color = s ? s.color : '#58c47c';                  /* team-green lane creeps */
   const k = upscale(z);
+  const w = now * 0.012 + id;
   g.save(); g.translate(x, y); g.scale(k, k);
   g.strokeStyle = shade(color, 0.7); g.lineWidth = 2;
   g.fillStyle = 'rgba(40,20,50,.15)';
   g.beginPath(); g.ellipse(0, 9, 8, 3, 0, 0, Math.PI * 2); g.fill();
-  g.fillStyle = color; g.globalAlpha = 0.92;               /* translucent like real gummies */
-  g.beginPath(); g.arc(-5.5, -7, 3, 0, Math.PI * 2); g.fill(); g.stroke();   /* ears */
+  g.rotate(Math.sin(w * 5) * 0.07);
+  g.fillStyle = color; g.globalAlpha = 0.92;
+  g.beginPath(); g.arc(-5.5, -7, 3, 0, Math.PI * 2); g.fill(); g.stroke();
   g.beginPath(); g.arc(5.5, -7, 3, 0, Math.PI * 2); g.fill(); g.stroke();
   g.beginPath(); g.arc(0, 0, 8.5, Math.PI, 0); g.lineTo(8.5, 5); g.quadraticCurveTo(0, 9.5, -8.5, 5);
   g.closePath(); g.fill(); g.stroke();
@@ -1448,6 +1996,17 @@ function drawGummy(g, row, seats, z) {
   g.fillStyle = 'rgba(255,255,255,.45)';
   g.beginPath(); g.arc(-3, -3, 2.5, 0, Math.PI * 2); g.fill();
   face(g, 0, -1, 0.75, 'smile');
+  if (type === 'bruiser') {
+    g.strokeStyle = '#8b8f99'; g.lineWidth = 2.6; g.lineCap = 'round';   /* candy-cane pike */
+    g.beginPath(); g.moveTo(9, 3); g.lineTo(14, -9); g.stroke();
+    g.strokeStyle = '#ff4d6d'; g.lineWidth = 1.4;
+    g.beginPath(); g.moveTo(10.5, -1); g.lineTo(12.5, -5); g.stroke();
+  } else if (type === 'slinger') {
+    g.fillStyle = shade(color, 0.85);                     /* little hood */
+    g.beginPath(); g.moveTo(-7, -8); g.lineTo(0, -16); g.lineTo(7, -8); g.closePath(); g.fill(); g.stroke();
+    g.strokeStyle = '#8a5a2b'; g.lineWidth = 1.8;
+    g.beginPath(); g.arc(10, 0, 6, -Math.PI * 0.45, Math.PI * 0.45); g.stroke();
+  }
   if (hpPct < 100) hpBar(g, 0, 12, 18, hpPct / 100);
   g.restore();
 }
@@ -1455,7 +2014,7 @@ function drawGummy(g, row, seats, z) {
 const FX_LIFE = { pew: 0.25, zap: 0.3, slash: 0.25, shell: 0.6, boom: 0.6, bash: 0.5, cry: 0.8, nova: 0.6,
   barrage: 0.6, trap: 0.8, pierce: 0.4, meteor: 0.8, heal: 0.8, overclock: 0.8, shield: 0.6, built: 0.7,
   sold: 0.5, level: 0.9, die: 0.6, hit: 0.3, spawn: 0.5, horn: 1.4, clear: 1.6, castlehit: 0.5,
-  herodown: 1.2, crumble: 0.9, syrup: 0.5 };
+  herodown: 1.2, crumble: 0.9, syrup: 0.5, etzap: 0.35, towerdown: 1.6 };
 
 function drawFx(g, fxList, now, z) {
   for (const f of fxList) {
@@ -1470,6 +2029,14 @@ function drawFx(g, fxList, now, z) {
       const t0 = Math.min(1, k * 2.4), t1 = Math.min(1, k * 3);
       g.beginPath(); g.moveTo((f.x2 - f.x) * t0, (f.y2 - f.y) * t0);
       g.lineTo((f.x2 - f.x) * t1, (f.y2 - f.y) * t1); g.stroke();
+    } else if (f.t === 'etzap' && f.x2 !== undefined) {
+      g.strokeStyle = '#ff5c8a'; g.lineWidth = lw * 1.8;
+      g.beginPath(); g.moveTo(0, -30); g.lineTo(f.x2 - f.x, f.y2 - f.y); g.stroke();
+      g.strokeStyle = '#fff'; g.lineWidth = lw * 0.6;
+      g.beginPath(); g.moveTo(0, -30); g.lineTo(f.x2 - f.x, f.y2 - f.y); g.stroke();
+    } else if (f.t === 'towerdown') {
+      g.font = `${Math.max(36, 42 / z)}px sans-serif`; g.textAlign = 'center';
+      g.fillText('🎉', -26, -k * 60); g.fillText('💰', 26, -k * 40);
     } else if (f.t === 'zap' && f.x2 !== undefined) {
       g.strokeStyle = '#ff5cf0'; g.lineWidth = lw;
       g.beginPath(); g.moveTo(0, 0); g.lineTo(f.x2 - f.x, f.y2 - f.y); g.stroke();
@@ -1607,10 +2174,12 @@ function drawScene(g, world, snap, seats, now, z, mySeat, fogCache) {
   drawTerrain(g, world, snap.ap, now);
   drawFields(g, snap.fields || [], now);
   drawCastleAt(g, world.castle.x, world.castle.y, snap.c[0], snap.c[1], snap.chit, now);
+  drawHordeBase(g, world.horde.x, world.horde.y, snap.hb[0], snap.hb[1], snap.hhit, now);
+  for (const t of snap.eb || []) drawETower(g, t, z, now);
   for (const b of snap.b) drawBld(g, b, seats, z, now);
-  for (const a of snap.a) drawGummy(g, a, seats, z);
-  /* creatures still hidden in the fog aren't drawn */
+  for (const a of snap.a) drawAlly(g, a, seats, z, now);
   const seen = (e) => !snap.fogArr || snap.fogArr[fogIdx(e[2], e[3])];
+  for (const n of (snap.nn || []).filter(seen)) drawNeutral(g, n, z, now);
   const ground = snap.e.filter((e) => !ETYPES[ETYPE[e[1]]].air && seen(e));
   const air = snap.e.filter((e) => ETYPES[ETYPE[e[1]]].air && seen(e));
   for (const e of ground) drawEnemy(g, e, z, now);
@@ -1641,9 +2210,14 @@ function lerpView(prev, cur, alpha) {
   const prevA = new Map(p.a.map((r) => [r[0], r]));
   const al = s.a.map((r) => {
     const q = prevA.get(r[0]);
+    return q ? [r[0], r[1], r[2], mix(q[3], r[3]), mix(q[4], r[4]), r[5]] : r;
+  });
+  const prevN = new Map((p.nn || []).map((r) => [r[0], r]));
+  const nn = (s.nn || []).map((r) => {
+    const q = prevN.get(r[0]);
     return q ? [r[0], r[1], mix(q[2], r[2]), mix(q[3], r[3]), r[4]] : r;
   });
-  return { ...s, pl, e, a: al };
+  return { ...s, pl, e, a: al, nn };
 }
 
 const fitZoom = (w, h) => Math.min(w / (WORLD_W * 2.12), h / (WORLD_H * 2.12));
@@ -1676,7 +2250,8 @@ function createHost(ctx) {
   let prev = null, cur = null;
   let fxLive = [];
   let canvas, g, cam = { x: 0, y: 0, z: 0.2, tz: 0.2 };
-  let dragging = null, lastPhase = '', lastWave = 0;
+  let dragging = null, lastPhase = '', lastTowers = -1;
+  const seenEHeroes = new Set();
   const fogCache = { v: -1, cnv: null };
   let onResize;
 
@@ -1798,8 +2373,10 @@ function createHost(ctx) {
     /* top bar */
     const wp = $q('.gg-wavepill');
     if (snap.ph === 'pick') wp.textContent = '🦸 Choosing heroes…';
-    else if (snap.ph === 'prep') wp.textContent = snap.w === 0 ? '🔨 Build your defenses!' : `🌊 Wave ${snap.w} cleared!`;
-    else wp.textContent = `🌊 Wave ${snap.w} of ${LAST_WAVE}`;
+    else {
+      const m = Math.floor(snap.clock / 60), sec = String(snap.clock % 60).padStart(2, '0');
+      wp.textContent = `⏱ ${m}:${sec}`;
+    }
 
     const frac = clamp(snap.c[0] / snap.c[1], 0, 1);
     $q('.gg-castlefill').style.width = `${frac * 100}%`;
@@ -1807,19 +2384,20 @@ function createHost(ctx) {
     $q('.gg-castletxt').textContent = `${snap.c[0]} / ${snap.c[1]}`;
 
     const tp = $q('.gg-timerpill');
-    if (snap.ph === 'prep') { tp.classList.remove('hidden'); tp.textContent = `⏳ Wave ${snap.w + 1} in ${Math.ceil(snap.pt / 10)}s`; }
+    if (snap.ph === 'pick') { tp.classList.remove('hidden'); tp.textContent = `⏳ ${Math.ceil(snap.pt / 10)}s`; }
     else tp.classList.add('hidden');
 
+    /* the horde base's health, mirrored up top in purple */
     const hp = $q('.gg-hordepill');
-    if (snap.ph === 'wave') { hp.classList.remove('hidden'); hp.textContent = `👹 ${snap.left} left`; }
-    else hp.classList.add('hidden');
+    hp.classList.remove('hidden');
+    hp.textContent = `👹 ${Math.max(0, Math.round((snap.hb[0] / snap.hb[1]) * 100))}%`;
 
     /* roster chips */
     $q('.gg-roster').innerHTML = snap.pl.map((r) => {
       const s = st[r[0]];
       if (!s) return '';
       const hero = r[1] >= 0 ? HEROES[r[1]].emoji : '❔';
-      const status = r[6] > 0 ? ` · 😵 ${Math.ceil(r[6] / 10)}s` : (snap.ph === 'prep' && r[11] ? ' · ✅ ready' : '');
+      const status = r[6] > 0 ? ` · 😵 ${Math.ceil(r[6] / 10)}s` : ` · Lv ${r[11]}`;
       return `<div class="gg-chip ${s.connected ? '' : 'gg-chip-off'}" style="border-color:${s.color}">
         <span class="gg-chip-hero">${hero}</span>
         <span class="gg-chip-name">${escapeHtml(s.name)}</span>
@@ -1827,18 +2405,23 @@ function createHost(ctx) {
       </div>`;
     }).join('');
 
-    /* phase transitions → banners */
-    if (snap.ph !== lastPhase || snap.w !== lastWave) {
-      if (snap.ph === 'wave' && (lastPhase !== 'wave' || snap.w !== lastWave)) {
-        banner(snap.w % 5 === 0
-          ? `<b>WAVE ${snap.w}</b><span>👹 The Rock Candy Colossus approaches!</span>`
-          : `<b>WAVE ${snap.w}</b><span>Here they come — hold the line!</span>`);
-      } else if (snap.ph === 'prep' && lastPhase === 'wave') {
-        banner(`<b>WAVE ${snap.w} CLEARED! 🎉</b><span>Grab your phone — upgrade time!</span>`);
-      } else if (snap.ph === 'prep' && lastPhase === 'pick') {
-        banner(`<b>BUILD PHASE 🔨</b><span>Place towers from your phones before wave 1!</span>`, 4000);
+    /* event banners: match start, towers falling, enemy heroes arriving */
+    if (snap.ph !== lastPhase && snap.ph === 'play') {
+      banner(`<b>MARCH! ⚔️</b><span>Destroy the Rock Candy Cavern before it destroys the castle!</span>`, 4000);
+    }
+    lastPhase = snap.ph;
+    const nTowers = (snap.eb || []).length;
+    if (lastTowers >= 0 && nTowers < lastTowers) {
+      banner(`<b>TOWER DOWN! 💥</b><span>The horde's defenses are crumbling</span>`);
+    }
+    lastTowers = nTowers;
+    const heroIds = new Set((snap.e || []).filter((r) => ETYPES[ETYPE[r[1]]].hero).map((r) => r[0]));
+    for (const id of heroIds) {
+      if (!seenEHeroes.has(id)) {
+        seenEHeroes.add(id);
+        const row = snap.e.find((r) => r[0] === id);
+        if (lastPhase === 'play') banner(`<b>${ETYPES[ETYPE[row[1]]].label.toUpperCase()}! 👹</b><span>An enemy hero marches on the castle</span>`);
       }
-      lastPhase = snap.ph; lastWave = snap.w;
     }
 
     /* game over */
@@ -1857,7 +2440,7 @@ function createHost(ctx) {
     }).join('');
     el.innerHTML = snap.over === 'win'
       ? `<div class="gg-over-card gg-over-win"><h1>🏆 VICTORY!</h1>
-         <p>All ${LAST_WAVE} waves defeated — the Gingerbread Castle stands!</p>${rows}
+         <p>The Rock Candy Cavern lies in ruins — the Gingerbread Kingdom is saved!</p>${rows}
          <p class="gg-over-hint">Press ⌂ Lobby to play something else</p></div>`
       : `<div class="gg-over-card gg-over-lose"><h1>💔 The castle has crumbled…</h1>
          <p>You held out until wave ${sim.stats.waveReached}. Great teamwork — try a new tower plan!</p>${rows}
@@ -1892,7 +2475,7 @@ function createHost(ctx) {
       case 'mv': p.dir = { x: +data.x || 0, y: +data.y || 0 }; break;
       case 'ab': castAbility(sim, playerId, clamp(data.i | 0, 0, 2)); break;
       case 'walk':
-        if (sim.phase === 'prep' && p.hero && !p.dead) p.moveTo = { x: +data.x || 0, y: +data.y || 0 };
+        if (sim.phase === 'play' && p.hero && !p.dead) p.moveTo = { x: +data.x || 0, y: +data.y || 0 };
         break;
       case 'build': {
         const res = build(sim, playerId, data.type, +data.x || 0, +data.y || 0);
@@ -1904,7 +2487,6 @@ function createHost(ctx) {
       case 'up': upgradeHero(sim, playerId, data.what); break;
       case 'bup': upgradeBld(sim, playerId, data.id | 0); break;
       case 'sell': sellBld(sim, playerId, data.id | 0); break;
-      case 'ready': p.ready = !!data.v; break;
     }
   }
 
@@ -1918,7 +2500,7 @@ function createHost(ctx) {
   }
   function onPlayerRejoin(player) {
     const p = sim.players.get(player.id);
-    if (p) { p.connected = true; p.ready = false; }
+    if (p) { p.connected = true; }
     sendInit(player.id);
   }
 
@@ -1947,8 +2529,10 @@ const CTRL_HTML = `
   <div class="gg-cgame hidden">
     <div class="gg-cstatus">
       <span class="gg-cs-wave"></span>
+      <span class="gg-cs-lvl"></span>
       <span class="gg-cs-coins"></span>
-      <div class="gg-cs-hpwrap"><div class="gg-cs-hp"></div></div>
+      <div class="gg-cs-hpwrap"><div class="gg-cs-hp"></div><div class="gg-cs-xp"></div></div>
+      <button class="gg-shopbtn">🎒</button>
     </div>
     <div class="gg-canvaswrap"><canvas class="gg-cmap"></canvas></div>
 
@@ -1958,17 +2542,16 @@ const CTRL_HTML = `
       <div class="gg-abs"></div>
     </div>
 
-    <!-- PREP controls: the upgrade shop -->
+    <!-- the SHOP: gear, towers, and building — open any time, the war rages on -->
     <div class="gg-prep hidden">
       <div class="gg-prep-head">
-        <span class="gg-prep-timer">⏳</span>
-        <button class="gg-ready-btn">✅ Ready!</button>
+        <span class="gg-prep-timer">🪙</span>
+        <button class="gg-ready-btn">⚔️ Back to battle</button>
       </div>
       <div class="gg-tabs">
-        <button class="gg-tab gg-tab-on" data-tab="hero">🦸 Hero</button>
-        <button class="gg-tab" data-tab="towers">🏗️ My Towers</button>
+        <button class="gg-tab gg-tab-on" data-tab="gear">🎒 Gear</button>
         <button class="gg-tab" data-tab="build">🔨 Build</button>
-        <button class="gg-tab" data-tab="map">🗺️ Walk</button>
+        <button class="gg-tab" data-tab="towers">🏗️ My Towers</button>
       </div>
       <div class="gg-tabbody"></div>
     </div>
@@ -1989,14 +2572,15 @@ function createController(ctx) {
   let world = null, seats = [], mySeat = -1;
   let prev = null, cur = null, fxLive = [];
   let canvas, g, raf = 0;
-  let mode = 'pick';                 // 'pick' | 'wave' | 'prep'
-  let tab = 'hero';
+  let mode = 'pick';                 // 'pick' | 'play' | 'panel'
+  let panelOpen = false;             // the shop overlay (gear/build/towers)
+  let tab = 'gear';
   let placing = null;                // { type, x, y } while dropping a tower
   let cam = { x: 0, y: 0, z: 0.1 };
   let mapCam = null;                 // pan/zoom for prep map { x, y, z }
   let stick = null;                  // active joystick touch
   let lastMv = 0, lastSent = '0,0';
-  let ready = false, myHero = null;
+  let myHero = null;
   let touch = null;                  // prep map pan/pinch state
   let onResize, ro = null;
   let fog = null, fogVSeen = -1;
@@ -2040,12 +2624,12 @@ function createController(ctx) {
 
     bindStick();
     bindMapTouch();
-    $q('.gg-ready-btn').addEventListener('click', () => {
-      ready = !ready;
-      ctx.send({ k: 'ready', v: ready });
-      $q('.gg-ready-btn').classList.toggle('gg-ready-on', ready);
-      $q('.gg-ready-btn').textContent = ready ? '⏸ Wait, not yet!' : '✅ Ready!';
+    $q('.gg-shopbtn').addEventListener('click', () => {
+      panelOpen = !panelOpen;
+      if (panelOpen) ctx.send({ k: 'mv', x: 0, y: 0 });   // stand still while shopping
+      syncMode(true);
     });
+    $q('.gg-ready-btn').addEventListener('click', () => { panelOpen = false; placing = null; syncMode(true); });
     for (const t of ctx.root.querySelectorAll('.gg-tab')) {
       t.addEventListener('click', () => { tab = t.dataset.tab; placing = null; updateHud.sig = null; renderTabs(); });
     }
@@ -2053,7 +2637,7 @@ function createController(ctx) {
     $q('.gg-place-ok').addEventListener('click', () => {
       if (!placing || placing.x === undefined) return;
       ctx.send({ k: 'build', type: placing.type, x: Math.round(placing.x), y: Math.round(placing.y) });
-      placing = null; syncMode(true);
+      placing = null; panelOpen = false; syncMode(true);
     });
 
     raf = requestAnimationFrame(render);
@@ -2128,13 +2712,13 @@ function createController(ctx) {
     const sx = rect.width ? canvas.width / rect.width : devicePixelRatio;
     const sy = rect.height ? canvas.height / rect.height : devicePixelRatio;
     const cx = (px - rect.left) * sx, cy = (py - rect.top) * sy;
-    const c = mode === 'prep' && mapCam ? mapCam : cam;
+    const c = mode === 'panel' && mapCam ? mapCam : cam;
     return { x: (cx - canvas.width / 2) / c.z + c.x, y: (cy - canvas.height / 2) / c.z + c.y };
   }
 
   function bindMapTouch() {
     canvas.addEventListener('touchstart', (e) => {
-      if (mode !== 'prep') return;
+      if (mode !== 'panel') return;
       e.preventDefault();
       if (e.touches.length === 1) {
         const t = e.touches[0];
@@ -2144,7 +2728,7 @@ function createController(ctx) {
       }
     }, { passive: false });
     canvas.addEventListener('touchmove', (e) => {
-      if (mode !== 'prep' || !touch) return;
+      if (mode !== 'panel' || !touch) return;
       e.preventDefault();
       if (touch.m === 'pan' && e.touches.length === 1) {
         const t = e.touches[0];
@@ -2158,12 +2742,12 @@ function createController(ctx) {
       }
     }, { passive: false });
     canvas.addEventListener('touchend', (e) => {
-      if (mode !== 'prep' || !touch) return;
+      if (mode !== 'panel' || !touch) return;
       if (touch.m === 'pan' && touch.moved < 14) mapTap(touch.x0, touch.y0);
       if (!e.touches.length) touch = null;
     });
     canvas.addEventListener('click', (e) => {      // desktop testing
-      if (mode === 'prep') mapTap(e.clientX, e.clientY);
+      if (mode === 'panel') mapTap(e.clientX, e.clientY);
     });
   }
 
@@ -2223,8 +2807,7 @@ function createController(ctx) {
     const me = myRow(snap);
     let want;
     if (!me || me[1] < 0) want = 'pick';
-    else if (snap.ph === 'prep') want = 'prep';
-    else want = 'wave';
+    else want = (panelOpen || placing) ? 'panel' : 'play';
     if (snap.over) want = 'over';
     if (want === mode && !force) return;
     mode = want;
@@ -2232,17 +2815,16 @@ function createController(ctx) {
 
     $q('.gg-cpick').classList.toggle('hidden', mode !== 'pick');
     $q('.gg-cgame').classList.toggle('hidden', mode === 'pick');
-    $q('.gg-wavehud').classList.toggle('hidden', mode !== 'wave');
-    $q('.gg-prep').classList.toggle('hidden', mode !== 'prep' || !!placing);
+    $q('.gg-wavehud').classList.toggle('hidden', mode !== 'play');
+    $q('.gg-prep').classList.toggle('hidden', mode !== 'panel' || !!placing);
     $q('.gg-placebar').classList.toggle('hidden', !placing);
     $q('.gg-cgame').classList.toggle('gg-placing', !!placing);
+    $q('.gg-shopbtn').classList.toggle('gg-shopbtn-on', mode === 'panel');
 
-    if (mode === 'prep' && !mapCam) {
+    if (mode === 'panel' && !mapCam) {
       mapCam = { x: 0, y: 0, z: fitZoom(canvas.width, canvas.height) };
-      toast('Upgrade time! Build towers from the 🔨 Build tab');
     }
-    if (mode === 'wave') { placing = null; ready = false; }
-    if (mode === 'prep' && !placing) renderTabs();
+    if (mode === 'panel' && !placing) { updateHud.sig = null; renderTabs(); }
     if (mode === 'over') showOver(snap);
     requestAnimationFrame(onResize);
   }
@@ -2254,7 +2836,7 @@ function createController(ctx) {
     $q('.gg-prep').classList.add('hidden');
     el.innerHTML = snap.over === 'win'
       ? `<h1>🏆</h1><p>VICTORY! The castle stands!</p>`
-      : `<h1>💔</h1><p>The castle fell on wave ${snap.w}.<br>Watch the big screen!</p>`;
+      : `<h1>💔</h1><p>The Gingerbread Castle fell!<br>Watch the big screen!</p>`;
   }
 
   function toast(msg) {
@@ -2269,20 +2851,22 @@ function createController(ctx) {
   function updateHud(snap) {
     const me = myRow(snap);
     if (!me) return;
-    $q('.gg-cs-wave').textContent = snap.ph === 'wave' ? `🌊 ${snap.w} · 👹 ${snap.left}` :
-      snap.ph === 'prep' ? `🌊 Wave ${snap.w + 1} soon` : '🦸';
+    const m = Math.floor(snap.clock / 60), sec = String(snap.clock % 60).padStart(2, '0');
+    $q('.gg-cs-wave').textContent = `⏱ ${m}:${sec}`;
+    $q('.gg-cs-lvl').textContent = `Lv ${me[11]}`;
     $q('.gg-cs-coins').textContent = `🪙 ${me[7]}`;
     const hpFrac = me[5] ? clamp(me[4] / me[5], 0, 1) : 0;
     const bar = $q('.gg-cs-hp');
     bar.style.width = `${hpFrac * 100}%`;
     bar.style.background = hpFrac > 0.5 ? '#6bcf7f' : hpFrac > 0.25 ? '#ffd93d' : '#ff4d6d';
+    $q('.gg-cs-xp').style.width = `${clamp(me[18], 0, 100)}%`;
 
-    if (mode === 'wave') updateAbs(me);
-    if (mode === 'prep') {
-      $q('.gg-prep-timer').textContent = `⏳ ${Math.ceil(snap.pt / 10)}s`;
+    if (mode === 'play') updateAbs(me);
+    if (mode === 'panel') {
+      $q('.gg-prep-timer').textContent = `🪙 ${me[7]}`;
       /* rebuild the shop only when something it shows actually changed,
          so taps and scrolling never fight a re-render */
-      const sig = tab + '|' + me[7] + '|' + me.slice(14).join(',') + '|' +
+      const sig = tab + '|' + me[7] + '|' + me[11] + '|' + me.slice(14).join(',') + '|' +
         snap.b.filter((r) => r[1] === mySeat).map((r) => `${r[0]}:${r[5]}:${r[6]}`).join(',');
       if (sig !== updateHud.sig) { updateHud.sig = sig; renderTabs(); }
     }
@@ -2325,16 +2909,18 @@ function createController(ctx) {
     if (!me) return;
     const coins = me[7];
 
-    if (tab === 'hero') {
+    if (tab === 'gear') {
       const ups = { dmg: me[14], hp: me[15], spd: me[16], pow: me[17] };
-      body.innerHTML = Object.entries(HUP).map(([key, u]) => {
+      body.innerHTML = `<p class="gg-empty"><small>Buy equipment, then upgrade it tier by tier. Levels come from battle!</small></p>` +
+        Object.entries(HUP).map(([key, u]) => {
         const n = ups[key], maxed = n >= HUP_MAX, cost = hupCost(n);
         const pips = Array.from({ length: HUP_MAX }, (_, i) => `<i class="${i < n ? 'gg-pip-on' : ''}"></i>`).join('');
+        const owned = n > 0 ? `Tier ${TIER[n]}` : 'Not owned';
         return `<div class="gg-uprow">
           <span class="gg-up-emoji">${u.emoji}</span>
-          <span class="gg-up-info"><b>${u.label}</b><small>${u.hint}</small><span class="gg-pips">${pips}</span></span>
+          <span class="gg-up-info"><b>${u.label} <em class="gg-tier">${owned}</em></b><small>${u.hint}</small><span class="gg-pips">${pips}</span></span>
           <button class="gg-buy" data-up="${key}" ${maxed || coins < cost ? 'disabled' : ''}>
-            ${maxed ? 'MAX' : `🪙 ${cost}`}</button>
+            ${maxed ? 'MAX' : n === 0 ? `Buy 🪙${cost}` : `⬆️ 🪙${cost}`}</button>
         </div>`;
       }).join('');
       for (const b of body.querySelectorAll('.gg-buy[data-up]')) {
@@ -2373,8 +2959,6 @@ function createController(ctx) {
           toast('Tap the map to move the ghost — Place when it turns green!');
         });
       }
-    } else if (tab === 'map') {
-      body.innerHTML = `<p class="gg-empty">Tap anywhere on the map to walk there.<br><small>Drag to pan · pinch to zoom</small></p>`;
     }
   }
 
@@ -2389,7 +2973,7 @@ function createController(ctx) {
     view.fogArr = fog; view.fogV = fogVSeen;
 
     let c;
-    if (mode === 'wave' || mode === 'over') {
+    if (mode === 'play' || mode === 'over') {
       const me = view.pl.find((r) => r[0] === mySeat);
       const z = Math.min(canvas.width, canvas.height) / 680;   // snug over-the-shoulder view
       if (me) { cam.x = me[2]; cam.y = me[3]; }
@@ -2456,7 +3040,7 @@ function createController(ctx) {
 export default {
   id: 'gumdropguardians',
   title: 'Gumdrop Guardians',
-  tagline: 'Co-op tower defense — hold the castle together!',
+  tagline: 'Co-op candy battle arena — storm the cavern together!',
   emoji: '🛡️',
   minPlayers: 1,
   maxPlayers: 6,
@@ -2467,6 +3051,7 @@ export default {
 /* headless testing hooks */
 export const __sim = {
   buildWorld, canPlace, makeSim, addPlayer, pickHero, stepSim, build,
-  upgradeBld, upgradeHero, sellBld, castAbility, snapshot, buildWave,
-  HEROES, BLD, ETYPES, CASTLE, HORDE, LAST_WAVE, WORLD_W, WORLD_H, revealCircle, fogIdx,
+  upgradeBld, upgradeHero, sellBld, castAbility, snapshot, walkable, hurtETower, hurtHorde, addXp,
+  HEROES, BLD, ETYPES, ATYPES, NTYPES, ETOWER, CASTLE, HORDE, WORLD_W, WORLD_H,
+  WALK_COLS, WALK_ROWS, WALK_CELL, SPAWN_EVERY, GROUP_SIZE, XP_LVL, revealCircle, fogIdx,
 };

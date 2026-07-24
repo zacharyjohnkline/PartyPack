@@ -29,12 +29,31 @@ js/main.js              networking, lobby, roster, game registry, routing
 js/util.js              shared side-effect-free helpers
 js/games/topbanana.js   Apples-to-Apples-style judging game
 js/games/sweetpath.js   Sweet Path candy board race
-js/games/gumdropguardians.js  Gumdrop Guardians co-op tower defense
-```
+js/games/gumdropguardians.js  Gumdrop Guardians 🛡️ (1-6 players)
 
-`main.js` owns everything network-shaped: the PeerJS room, join/reconnect flow,
-and the roster. Games never touch a connection — the shell routes messages to
-and from the active game module.
+A co-op candy MOBA, fully real time. The team's Gingerbread Castle sits in one
+corner of a big widescreen map; the horde's Rock Candy Cavern glowers from the
+other. Every 20 seconds BOTH bases send a group of 10 fighters marching down
+the three lanes — they meet in the middle and brawl. Destroy the cavern to win
+before the horde flattens the castle.
+
+Standing in your way: two enemy towers per lane (huge health, and hits hard
+enough to fell the tankiest knight in about 8 swats), enemy heroes like the
+Sour Sergeant and Licorice Sniper who arrive on a schedule, and an endless
+tide of creeps that grows meaner every minute.
+
+The wilds between the lanes are shaped by rock ridges and tree thickets that
+block travel (never sealing anything off — there's always a way around), and
+dotted with neutral creep camps. Taffy Wolves, Brittle Bears, and the Elder
+Rockjaw guard their clearings fiercely; clearing a camp pays coins and levels
+your hero up. Heroes grow two ways: LEVELS earned through kills and battle
+performance, and GEAR bought from the 🎒 shop on your phone — the Lollipop
+Blade, Gumdrop Plate, Zoom-Zoom Boots, and Star Charm, each upgradeable
+through eight tiers. Towers can still be built anywhere the team has scouted
+(fog of war hides the unexplored map), any time, mid-fight.
+
+Phones are full controllers: joystick + three hero powers, a live mini-view of
+your hero, and the shop overlay for gear, building, and tower upgrades.
 
 ## Games
 
@@ -45,12 +64,18 @@ winner, who earns a banana. First to 5 bananas wins. All card text is original.
 
 **Gumdrop Guardians 🛡️** (1–6 players) — cooperative tower defense! Everyone
 picks a hero (each with 3 real-time powers), then defends the Gingerbread
-Castle together against 20 waves pouring in along five winding trails. Waves
+Castle in one corner of a big widescreen (16:9) map against 20 waves marching
+out of the Rock Candy Cavern in the opposite corner, down three winding lanes.
+Fog of war covers everywhere the team hasn't walked — scouting reveals the map
+for good, and towers can only be placed on explored ground. Waves
 scale with the player count first and the wave number second, and later waves
 bring fliers, building-eating sappers, golems, and a boss every 5th wave.
 Between waves there's a ~20-second shop phase where the phone flips from
 joystick-and-powers to an upgrade menu: level up your hero, place new towers,
-and upgrade the towers *you* built — nobody can touch anyone else's. Enemies
+and upgrade the towers *you* built — nobody can touch anyone else's, and every
+tower is painted in its owner's color. Melee heroes (Sir Crunch-a-Lot and
+Greta) are far tankier than the ranged ones and regenerate health even while
+taking hits. Enemies
 get lured off their trails by nearby heroes and buildings, so divide and
 conquer! Run the headless sim tests with `node test-gg.mjs`.
 
