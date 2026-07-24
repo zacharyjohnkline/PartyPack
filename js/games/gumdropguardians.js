@@ -28,7 +28,7 @@ import { escapeHtml } from '../util.js';
 const TICK_MS = 100;               // 10 sim ticks per second
 const SNAP_EVERY = 2;              // snapshot to phones every 200 ms
 
-const WORLD_R = 2700;              // world radius — ~3 min end to end on foot
+const WORLD_R = 2700;              // world radius — ~1 min end to end on foot
 const PORTAL_R = 2520;             // enemy portals sit on this ring
 const N_PATHS = 5;                 // winding trails to the castle
 const PATH_PTS = 9;                // waypoints per trail
@@ -45,13 +45,13 @@ const START_COINS = 140;
    Three abilities each (see ABILITIES below). */
 const HEROES = [
   { id: 'knight',  name: 'Sir Crunch-a-Lot', emoji: '🛡️', desc: 'Tough as toffee. Stuns, taunts, and soaks damage up close.',
-    hp: 420, dmg: 22, range: 40,  cd: 8, speed: 3.0, r: 20, hitAir: false },
+    hp: 420, dmg: 22, range: 40,  cd: 8, speed: 9.0, r: 20, hitAir: false },
   { id: 'ranger',  name: 'Huckleberry Fin',  emoji: '🏹', desc: 'Long-range berry archer. Shreds fliers and snipes brutes.',
-    hp: 260, dmg: 14, range: 190, cd: 7, speed: 3.2, r: 18, hitAir: true },
+    hp: 260, dmg: 14, range: 190, cd: 7, speed: 9.6, r: 18, hitAir: true },
   { id: 'mage',    name: 'Minty Merlin',     emoji: '🧙', desc: 'Splashy spells, slows, meteors, and a team heal.',
-    hp: 240, dmg: 11, range: 170, cd: 9, speed: 2.9, r: 18, hitAir: true, splash: 45 },
+    hp: 240, dmg: 11, range: 170, cd: 9, speed: 8.7, r: 18, hitAir: true, splash: 45 },
   { id: 'builder', name: 'Gingerbread Greta', emoji: '🔧', desc: 'Her towers cost 20% less. Repairs, overclocks, decoy walls.',
-    hp: 320, dmg: 12, range: 60,  cd: 8, speed: 3.1, r: 19, hitAir: false, discount: 0.8 },
+    hp: 320, dmg: 12, range: 60,  cd: 8, speed: 9.3, r: 19, hitAir: false, discount: 0.8 },
 ];
 const HERO_IDX = HEROES.map((h) => h.id);
 
@@ -1529,7 +1529,7 @@ const CTRL_HTML = `
     <div class="gg-placebar hidden">
       <button class="gg-place-cancel">✖ Cancel</button>
       <span class="gg-place-hint">Tap the map to aim</span>
-      <button class="gg-place-ok">🔨 Place</button>
+      <button class="gg-place-ok" disabled>🔨 Place</button>
     </div>
 
     <div class="gg-toast hidden"></div>
@@ -1719,6 +1719,25 @@ function createController(ctx) {
     }
   }
 
+  /* drop the ghost on a legal spot right next to the hero, so "Place"
+     works immediately and the player can see what they're doing */
+  function autoAim() {
+    if (!placing || !cur || !world) return;
+    const me = myRow(cur.snap);
+    const hx = me ? me[2] : 0, hy = me ? me[3] : 0;
+    placing.x = hx; placing.y = hy + 90;
+    outer: for (let r = 90; r <= 600; r += 60) {
+      for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
+        const x = hx + Math.cos(a) * r, y = hy + Math.sin(a) * r;
+        if (canPlace(world, cur.snap.b, x, y)) { placing.x = x; placing.y = y; break outer; }
+      }
+    }
+    /* zoom the build map in on the ghost so it's big and tappable */
+    mapCam = mapCam || { x: 0, y: 0, z: fitZoom(canvas.width, canvas.height) };
+    mapCam.x = placing.x; mapCam.y = placing.y;
+    mapCam.z = Math.max(mapCam.z, Math.min(canvas.width, canvas.height) / 1400);
+  }
+
   /* ---------- messages from the host ---------- */
   function onMessage(data) {
     if (data.k === 'init') {
@@ -1762,6 +1781,7 @@ function createController(ctx) {
 
     if (mode === 'prep' && !mapCam) {
       mapCam = { x: 0, y: 0, z: fitZoom(canvas.width, canvas.height) };
+      toast('Upgrade time! Build towers from the 🔨 Build tab');
     }
     if (mode === 'wave') { placing = null; ready = false; }
     if (mode === 'prep' && !placing) renderTabs();
@@ -1879,7 +1899,7 @@ function createController(ctx) {
       for (const b of body.querySelectorAll('[data-sell]')) b.addEventListener('click', () => ctx.send({ k: 'sell', id: +b.dataset.sell }));
     } else if (tab === 'build') {
       const disc = myHero && myHero.discount ? myHero.discount : 1;
-      body.innerHTML = BUILDABLE.map((t) => {
+      body.innerHTML = `<p class="gg-empty"><small>1️⃣ Tap a tower &nbsp;2️⃣ Tap the map to aim &nbsp;3️⃣ Hit 🔨 Place</small></p>` + BUILDABLE.map((t) => {
         const def = BLD[t], cost = Math.round(def.cost * disc);
         return `<button class="gg-bcard" data-build="${t}" ${coins < cost ? 'disabled' : ''}>
           <span class="gg-bcard-emoji">${def.emoji}</span>
@@ -1890,8 +1910,9 @@ function createController(ctx) {
       for (const b of body.querySelectorAll('[data-build]')) {
         b.addEventListener('click', () => {
           placing = { type: b.dataset.build };
+          autoAim();
           syncMode(true);
-          toast('Tap the map to aim, then hit Place!');
+          toast('Tap the map to move the ghost — Place when it turns green!');
         });
       }
     } else if (tab === 'map') {
@@ -1947,6 +1968,9 @@ function createController(ctx) {
       g.fillText(ok ? def.emoji : '🚫', 0, 0);
       g.restore();
       $q('.gg-place-ok').disabled = !ok;
+      const hint = ok ? '🟢 Good spot — hit Place!' : '🔴 Too close to a trail or building — tap elsewhere';
+      const hintEl = $q('.gg-place-hint');
+      if (hintEl.textContent !== hint) hintEl.textContent = hint;
     }
     g.restore();
   }
