@@ -53,8 +53,9 @@ import { escapeHtml } from './util.js';
 import topBanana from './games/topbanana.js';
 import sweetPath from './games/sweetpath.js';
 import candyKingdoms from './games/candykingdoms.js';
+import gumdropGuardians from './games/gumdropguardians.js';
 
-const GAMES = [topBanana, sweetPath, candyKingdoms];
+const GAMES = [topBanana, sweetPath, candyKingdoms, gumdropGuardians];
 
 const AVATARS = ['🍓', '🍋', '🍇', '🫐', '🍑', '🍍', '🥝', '🍒', '🍉', '🍊'];
 const COLORS  = ['#ff4d6d', '#ff9f4a', '#ffd93d', '#6bcf7f', '#4dabf7', '#b380ff',

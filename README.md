@@ -28,7 +28,8 @@ css/topbanana.css       Top Banana game styles
 js/main.js              networking, lobby, roster, game registry, routing
 js/util.js              shared side-effect-free helpers
 js/games/topbanana.js   Apples-to-Apples-style judging game
-js/games/sweetpath.js   Sweet Path placeholder (porting guide inside)
+js/games/sweetpath.js   Sweet Path candy board race
+js/games/gumdropguardians.js  Gumdrop Guardians co-op tower defense
 ```
 
 `main.js` owns everything network-shaped: the PeerJS room, join/reconnect flow,
@@ -41,6 +42,17 @@ and from the active game module.
 The big screen shows a golden prompt card; everyone else secretly plays the
 answer card from their hand of 7 that matches it best. The judge crowns a
 winner, who earns a banana. First to 5 bananas wins. All card text is original.
+
+**Gumdrop Guardians 🛡️** (1–6 players) — cooperative tower defense! Everyone
+picks a hero (each with 3 real-time powers), then defends the Gingerbread
+Castle together against 20 waves pouring in along five winding trails. Waves
+scale with the player count first and the wave number second, and later waves
+bring fliers, building-eating sappers, golems, and a boss every 5th wave.
+Between waves there's a ~20-second shop phase where the phone flips from
+joystick-and-powers to an upgrade menu: level up your hero, place new towers,
+and upgrade the towers *you* built — nobody can touch anyone else's. Enemies
+get lured off their trails by nearby heroes and buildings, so divide and
+conquer! Run the headless sim tests with `node test-gg.mjs`.
 
 **Sweet Path 🍭** (2–8 players) — the full candy board race, ported from the
 original game: the 3D spiral board, the opening button-mash for turn order,
