@@ -40,14 +40,20 @@ const HORDE  = { r: 120, hp: 5200, x: -1720, y: -784 };  // enemy cavern — des
 const SPAWN_EVERY = 200;           // ticks between creep groups
 const GROUP_SIZE = 10;             // units per group, per side
 const TIME_SCALE = 0.08;           // enemy hp/dmg +8% per minute
-const FOUNTAIN_R = 300;            // heroes heal fast near their own castle
+const FOUNTAIN_R = 300;            // heroes heal fast near their own base
+const FOUNTAIN_HEAL = 0.005;       // 5%/s at home — no more endless waits
+const REGEN_OOC = 50;              // melee regen pauses for 5 s after taking a hit
+const RANGED_REST = 1.5;           // ranged heroes drink 50% faster at fountains & springs
+const N_SPRINGS = 4;               // neutral soda springs scattered over the map
+const SPRING_R = 170;
+const SPRING_HEAL = 0.0035;        // 3.5%/s, either team, fight over them!
 const COIN_TRICKLE = 1;            // passive coins per second per player
 
 /* lane towers — every creep dies in exactly 4 zaps; heroes take 4 zaps at
    level 1, stretching to 10 zaps by level 10. Downed towers are CAPTURED. */
 const ETOWER = { hp: 2600, dmg: 160, range: 270, cd: 15, r: 34, coin: 120, xp: 150 };
 const towerDmgVsCreep = (u) => Math.ceil(u.maxhp * 0.25);
-const towerDmgVsHero = (p) => Math.ceil(p.maxhp / (4 + (p.lvl - 1) * (6 / 9)));
+const towerDmgVsHero = (p) => Math.ceil(p.maxhp / (4 + (Math.min(p.lvl, 10) - 1) * (6 / 9) + Math.max(0, p.lvl - 10) * 0.2));
 const CAPTURE_HP = 0.5;            // a freshly captured tower stands back up at half health
 const ETOWER_AT = [0.45, 0.22];    // fractions along each lane, measured from the owner's base
 const BASE_RING = [[350, 60], [60, 350], [290, 290], [150, 150],
@@ -72,23 +78,23 @@ const START_COINS = 160;
    Three abilities each (see ABILITIES below). */
 const HEROES = [
   /* 🍬 Gummi Kingdom roster */
-  { id: 'knight',  team: 0, name: 'Sir Crunch-a-Lot', emoji: '🛡️', desc: 'Melee tank — huge health that regrows even mid-fight.',
-    hp: 780, dmg: 22, range: 40,  cd: 8, speed: 9.0, r: 20, hitAir: false, regen: 0.0014 },
-  { id: 'ranger',  team: 0, name: 'Huckleberry Fin',  emoji: '🏹', desc: 'Long-range berry archer. Shreds fliers and snipes brutes.',
+  { id: 'knight',  team: 0, name: 'Sir Crunch-a-Lot', emoji: '🛡️', desc: 'Melee tank — huge health that regrows out of combat.',
+    hp: 780, dmg: 22, range: 40,  cd: 8, speed: 9.0, r: 20, hitAir: false, regen: 0.0011 },
+  { id: 'ranger',  team: 0, name: 'Huckleberry Fin',  emoji: '🏹', desc: 'Long-range berry archer — and the fastest healer at springs.',
     hp: 260, dmg: 14, range: 190, cd: 7, speed: 9.6, r: 18, hitAir: true },
-  { id: 'mage',    team: 0, name: 'Minty Merlin',     emoji: '🧙', desc: 'Splashy spells, slows, meteors, and a team heal.',
+  { id: 'mage',    team: 0, name: 'Minty Merlin',     emoji: '🧙', desc: 'Splashy spells, meteors, a team heal — rests fast at springs.',
     hp: 240, dmg: 11, range: 170, cd: 9, speed: 8.7, r: 18, hitAir: true, splash: 45 },
-  { id: 'builder', team: 0, name: 'Gingerbread Greta', emoji: '🔧', desc: 'Melee bruiser & builder — towers cost 20% less, health regrows.',
-    hp: 600, dmg: 12, range: 60,  cd: 8, speed: 9.3, r: 19, hitAir: false, discount: 0.8, regen: 0.0014 },
+  { id: 'builder', team: 0, name: 'Gingerbread Greta', emoji: '🔧', desc: 'Melee builder — towers cost 20% less, regrows out of combat.',
+    hp: 600, dmg: 12, range: 60,  cd: 8, speed: 9.3, r: 19, hitAir: false, discount: 0.8, regen: 0.0011 },
   /* 👹 Rock Candy Horde roster — same roles, totally different powers */
-  { id: 'slasher', team: 1, name: 'Sourpuss Slasher', emoji: '🗡️', desc: 'Twin-blade brawler — spins, rages, and LEAPS across the field.',
-    hp: 740, dmg: 24, range: 42,  cd: 8, speed: 9.2, r: 20, hitAir: false, regen: 0.0014 },
-  { id: 'whip',    team: 1, name: 'Licorice Lasher',  emoji: '🪢', desc: 'Whip-cracking skirmisher. Snares packs, hastens the horde.',
+  { id: 'slasher', team: 1, name: 'Sourpuss Slasher', emoji: '🗡️', desc: 'Twin-blade brawler — spins, rages, LEAPS. Regrows out of combat.',
+    hp: 740, dmg: 24, range: 42,  cd: 8, speed: 9.2, r: 20, hitAir: false, regen: 0.0011 },
+  { id: 'whip',    team: 1, name: 'Licorice Lasher',  emoji: '🪢', desc: 'Whip skirmisher — snares packs, hastens the horde, rests fast.',
     hp: 270, dmg: 13, range: 200, cd: 7, speed: 9.6, r: 18, hitAir: true },
   { id: 'shaman',  team: 1, name: 'Rock Candy Shaman', emoji: '🔮', desc: 'Crystal hexes: shard storms, walls, and life-draining feasts.',
     hp: 240, dmg: 11, range: 170, cd: 9, speed: 8.7, r: 18, hitAir: true, splash: 40 },
-  { id: 'tinker',  team: 1, name: 'Taffy Tinker',      emoji: '⚙️', desc: 'Gadget goblin & builder — towers cost 20% less, drops scrap turrets.',
-    hp: 580, dmg: 12, range: 60,  cd: 8, speed: 9.3, r: 19, hitAir: false, discount: 0.8, regen: 0.0014 },
+  { id: 'tinker',  team: 1, name: 'Taffy Tinker',      emoji: '⚙️', desc: 'Gadget builder — cheap towers, scrap turrets, regrows out of combat.',
+    hp: 580, dmg: 12, range: 60,  cd: 8, speed: 9.3, r: 19, hitAir: false, discount: 0.8, regen: 0.0011 },
 ];
 const HERO_IDX = HEROES.map((h) => h.id);
 const heroesOfTeam = (team) => HEROES.filter((h) => h.team === team);
@@ -148,8 +154,14 @@ const HUP_MAX = 8;
 const TIER = ['—', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII'];
 const hupCost = (n) => 50 + 30 * n;
 
-/* hero LEVELS — earned through play: kills, creeps, towers */
-const XP_LVL = [50, 120, 210, 330, 480, 660, 880, 1140, 1450];   // cumulative, lvl 2..10
+/* hero LEVELS — earned through play: kills, creeps, towers. The road now
+   runs all the way to 25, and each step costs more than it used to */
+const LVL_MAX = 25;
+const XP_LVL = (() => {                       // cumulative XP for lvl 2..25
+  const arr = []; let acc = 0;
+  for (let l = 2; l <= LVL_MAX; l++) { acc += Math.round(55 + 20 * Math.pow(l - 1, 1.35)); arr.push(acc); }
+  return arr;
+})();
 const LVL_DMG = 0.08, LVL_HP = 0.10, LVL_POW = 0.05;             // per level past 1
 const XP_SHARE_R = 520;                                          // nearby allies get 45%
 
@@ -182,16 +194,16 @@ const GUMMY = { hp: 60, dmg: 6, cd: 8, range: 26, speed: 2.6, aggro: 170, leash:
 /* the shared creep classes — BOTH armies draw from this same stat sheet,
    so neither side's waves ever have an edge. Only the costumes differ. */
 const CLASSES = {
-  grunt:  { hp: 60,  dmg: 8,  spd: 1.6, range: 26, aggro: 155, coin: 4,  xp: 8,  unlockMin: 0 },
-  runner: { hp: 36,  dmg: 6,  spd: 2.7, range: 24, aggro: 120, coin: 3,  xp: 6,  unlockMin: 0.8 },
-  flyer:  { hp: 50,  dmg: 7,  spd: 2.3, range: 26, aggro: 155, coin: 5,  xp: 10, unlockMin: 2, air: true },
-  sapper: { hp: 95,  dmg: 24, spd: 1.8, range: 28, aggro: 300, coin: 6,  xp: 12, unlockMin: 3.5, bldOnly: true },
-  tank:   { hp: 320, dmg: 20, spd: 1.2, range: 30, aggro: 135, coin: 12, xp: 25, unlockMin: 5.5 },
+  grunt:  { hp: 60,  dmg: 8,  spd: 1.6, range: 26, aggro: 155, coin: 4,  xp: 8,  r: 12, unlockMin: 0 },
+  runner: { hp: 36,  dmg: 6,  spd: 2.7, range: 24, aggro: 120, coin: 3,  xp: 6,  r: 10, unlockMin: 0.8 },
+  flyer:  { hp: 50,  dmg: 7,  spd: 2.3, range: 26, aggro: 155, coin: 5,  xp: 10, r: 11, unlockMin: 2, air: true },
+  sapper: { hp: 95,  dmg: 24, spd: 1.8, range: 28, aggro: 300, coin: 6,  xp: 12, r: 12, unlockMin: 3.5, bldOnly: true },
+  tank:   { hp: 320, dmg: 20, spd: 1.2, range: 30, aggro: 135, coin: 12, xp: 25, r: 17, unlockMin: 5.5 },
 };
 const HERO_CLASSES = {
-  hknight: { hp: 950,  dmg: 42, spd: 2.2, range: 44,  aggro: 220, coin: 60, xp: 130, hero: true, tough: 0.75 },
-  harcher: { hp: 560,  dmg: 34, spd: 2.3, range: 240, aggro: 260, coin: 60, xp: 130, hero: true },
-  hboss:   { hp: 2300, dmg: 62, spd: 1.6, range: 44,  aggro: 220, coin: 90, xp: 160, hero: true, boss: true },
+  hknight: { hp: 950,  dmg: 42, spd: 2.2, range: 44,  aggro: 220, coin: 60, xp: 130, r: 16, hero: true, tough: 0.75 },
+  harcher: { hp: 560,  dmg: 34, spd: 2.3, range: 240, aggro: 260, coin: 60, xp: 130, r: 14, hero: true },
+  hboss:   { hp: 2300, dmg: 62, spd: 1.6, range: 44,  aggro: 220, coin: 90, xp: 160, r: 20, hero: true, boss: true },
 };
 /* build one group's composition; used verbatim by BOTH bases each cycle */
 function makeComp(mins) {
@@ -206,13 +218,16 @@ const ETYPES = {
   wasp:     { label: 'Wafer Wasp',    cls: 'flyer' },
   sapper:   { label: 'Jelly Sapper',  cls: 'sapper' },
   golem:    { label: 'Gumdrop Golem', cls: 'tank' },
+  imp:      { label: 'Candy Imp', guard: true, hp: 60, dmg: 6, spd: 2.6, range: 26, cd: 8, aggro: 170, leash: 340,
+              coin: 2, xp: 4, r: 10 },
   eknight:  { label: 'Sour Sergeant',       cls: 'hknight' },
   earcher:  { label: 'Licorice Sniper',     cls: 'harcher' },
   boss:     { label: 'Rock Candy Colossus', cls: 'hboss' },
 };
 /* the gummy army wears the same stats in sweeter costumes */
 const ATYPES = {
-  gummy:   { label: 'Gummy Guard', guard: true, hp: 60, dmg: 6, spd: 2.6, range: 26, cd: 8, aggro: 170, leash: 340 },
+  gummy:   { label: 'Gummy Guard', guard: true, hp: 60, dmg: 6, spd: 2.6, range: 26, cd: 8, aggro: 170, leash: 340,
+             coin: 2, xp: 4, r: 10 },
   bruiser: { label: 'Gummy Bruiser',    cls: 'grunt' },
   dasher:  { label: 'Sherbet Dasher',   cls: 'runner' },
   bee:     { label: 'Bonbon Bee',       cls: 'flyer' },
@@ -371,6 +386,27 @@ function buildWorld(seed) {
     }
   }
 
+  /* --- neutral soda springs: 2 seeded spots, mirrored through the center
+     so neither army gets a closer drink --- */
+  const springs = [];
+  for (const [gap, laneGap, campGap] of [[700, 230, 380], [480, 210, 320], [340, 190, 260]]) {
+    for (let tries = 0; tries < 400 && springs.length < N_SPRINGS; tries++) {
+      const x = (rnd() * 2 - 1) * (WORLD_W - 500), y = (rnd() * 2 - 1) * (WORLD_H - 400);
+      const okAt = (px, py) =>
+        paths.every((pp) => distToPath(pp, px, py) > laneGap) &&
+        dist(px, py, C.x, C.y) > 750 && dist(px, py, H.x, H.y) > 750 &&
+        camps.every((c) => dist(px, py, c.x, c.y) > campGap) &&
+        etowers.every((t) => dist(px, py, t.x, t.y) > 320) &&
+        ptowers.every((t) => dist(px, py, t.x, t.y) > 320) &&
+        springs.every((sp) => dist(px, py, sp.x, sp.y) > gap);
+      if (okAt(x, y) && okAt(-x, -y)) {
+        springs.push({ x: Math.round(x), y: Math.round(y) });
+        springs.push({ x: Math.round(-x), y: Math.round(-y) });
+      }
+    }
+    if (springs.length >= N_SPRINGS) break;
+  }
+
   /* --- elevation ridges + tree thickets that block off-lane travel --- */
   const cellOk = (x, y) =>
     Math.abs(x) < WORLD_W - 80 && Math.abs(y) < WORLD_H - 80 &&
@@ -378,7 +414,8 @@ function buildWorld(seed) {
     dist(x, y, C.x, C.y) > 420 && dist(x, y, H.x, H.y) > 420 &&
     camps.every((c) => dist(x, y, c.x, c.y) > 230) &&
     etowers.every((t) => dist(x, y, t.x, t.y) > 160) &&
-    ptowers.every((t) => dist(x, y, t.x, t.y) > 160);
+    ptowers.every((t) => dist(x, y, t.x, t.y) > 160) &&
+    springs.every((sp) => dist(x, y, sp.x, sp.y) > 230);
   const cellAt = (x, y) => ({
     i: clamp(Math.floor((x + WORLD_W) / WALK_CELL), 0, WALK_COLS - 1),
     j: clamp(Math.floor((y + WORLD_H) / WALK_CELL), 0, WALK_ROWS - 1),
@@ -490,7 +527,7 @@ function buildWorld(seed) {
     if (block[cl.j * WALK_COLS + cl.i]) continue;
     props.push({ x: Math.round(x), y: Math.round(y), e: PROP_EMOJI[(rnd() * PROP_EMOJI.length) | 0], s: 24 + rnd() * 22 });
   }
-  return { paths, props, obstacles, block, camps, etowers, ptowers,
+  return { paths, props, obstacles, block, camps, etowers, ptowers, springs,
            w: WORLD_W, h: WORLD_H, castle: { x: C.x, y: C.y, r: CASTLE.r }, horde: { ...HORDE } };
 }
 
@@ -554,6 +591,7 @@ function canPlace(world, blds, x, y, fog) {
   if (dist(x, y, HORDE.x, HORDE.y) < HORDE.r + 130) return false;
   if (!walkable(world, x, y)) return false;
   for (const c of world.camps) if (dist(x, y, c.x, c.y) < 180) return false;
+  for (const sp of world.springs) if (dist(x, y, sp.x, sp.y) < 210) return false;
   for (const t of world.etowers) if (dist(x, y, t.x, t.y) < 170) return false;
   for (const t of world.ptowers) if (dist(x, y, t.x, t.y) < 170) return false;
   for (const p of world.paths) if (distToPath(p, x, y) < 48) return false;
@@ -640,10 +678,11 @@ const speedOf = (p) => heroDef(p).speed * (1 + HUP.spd.mul * p.up.spd);
 
 /* XP: killer earns it all; TEAMMATES fighting nearby learn almost as much */
 function addXp(sim, playerId, amount, x, y) {
+  if (!Number.isFinite(amount)) return;
   const killer = sim.players.get(playerId);
   const give = (p, amt) => {
     p.xp += amt;
-    while (p.lvl < 10 && p.xp >= XP_LVL[p.lvl - 1]) {
+    while (p.lvl < LVL_MAX && p.xp >= XP_LVL[p.lvl - 1]) {
       p.lvl++;
       const m = maxhpOf(p);
       p.hp = Math.min(m, p.hp + (m - p.maxhp) + Math.round(m * 0.25));
@@ -772,11 +811,13 @@ function build(sim, playerId, type, x, y) {
 
 function spawnGummy(sim, b) {
   const a = Math.random() * Math.PI * 2;
+  const type = b.team === 1 ? 'imp' : 'gummy';          /* each side trains its own guards */
+  const def = creepDef(b.team, type);
   creepsOf(sim, b.team).push({
-    id: sim.nextId++, team: b.team, role: 'guard', type: 'gummy', from: b.id, owner: b.owner,
+    id: sim.nextId++, team: b.team, role: 'guard', type, from: b.id, owner: b.owner,
     x: b.x + Math.cos(a) * 44, y: b.y + Math.sin(a) * 44,
-    hp: ATYPES.gummy.hp * (1 + 0.2 * (b.lvl - 1)), maxhp: ATYPES.gummy.hp * (1 + 0.2 * (b.lvl - 1)),
-    dmg: ATYPES.gummy.dmg, cd: 0, tgt: null, slow: 0, slowT: 0, stun: 0, taunt: null,
+    hp: def.hp * (1 + 0.2 * (b.lvl - 1)), maxhp: def.hp * (1 + 0.2 * (b.lvl - 1)),
+    dmg: def.dmg, cd: 0, tgt: null, slow: 0, slowT: 0, stun: 0, taunt: null,
   });
 }
 
@@ -836,6 +877,7 @@ function oppHeroes(sim, team) {
 function pvpHit(sim, victim, dmg, attacker) {
   const d = victim.armor > 0 ? Math.round(dmg * 0.4) : Math.round(dmg);
   victim.hp -= d;
+  victim.hurtAt = sim.tick;
   addFx(sim, 'hit', victim.x, victim.y);
   if (victim.hp <= 0) {
     killHero(sim, victim);
@@ -861,11 +903,11 @@ function awardCreepKill(sim, u, killerOwner) {
   const winners = 1 - u.team;
   for (const p of sim.players.values()) {
     if (!p.hero || p.team !== winners) continue;
-    let c = def.coin;
+    let c = def.coin || 0;
     if (killerOwner && p.id === killerOwner) { c = Math.round(c * (1 + KILLER_BONUS)); p.kills++; }
     p.coins += c;
   }
-  if (killerOwner) addXp(sim, killerOwner, def.xp, u.x, u.y);
+  if (killerOwner) addXp(sim, killerOwner, def.xp || 0, u.x, u.y);
   addFx(sim, 'die', u.x, u.y);
 }
 
@@ -1170,6 +1212,7 @@ function tgtPos(sim, u, tgt) {
 function hitHeroFrom(sim, p, rawDmg) {
   const dmg = p.armor > 0 ? Math.round(rawDmg * 0.4) : rawDmg;
   p.hp -= dmg;
+  p.hurtAt = sim.tick;
   if (p.hp <= 0) killHero(sim, p);
 }
 
@@ -1189,18 +1232,18 @@ function stepCreep(sim, u) {
     const home = sim.blds.find((b) => b.id === u.from);
     if (!home) { u.hp = 0; return; }
     let t = u.tgt ? creepsOf(sim, 1 - u.team).find((e) => e.id === u.tgt) : null;
-    if (t && (t.hp <= 0 || dist(t.x, t.y, home.x, home.y) > ATYPES.gummy.leash)) t = null;
+    if (t && (t.hp <= 0 || dist(t.x, t.y, home.x, home.y) > def.leash)) t = null;
     if (!t && sim.tick % 5 === (u.id % 5)) {
       let bd = Infinity;
       for (const e of creepsOf(sim, 1 - u.team)) {
         const d = dist(e.x, e.y, u.x, u.y);
-        if (d < bd && d <= def.aggro && dist(e.x, e.y, home.x, home.y) <= ATYPES.gummy.leash) { bd = d; t = e; }
+        if (d < bd && d <= def.aggro && dist(e.x, e.y, home.x, home.y) <= def.leash) { bd = d; t = e; }
       }
     }
     u.tgt = t ? t.id : null;
     if (t) {
       const d = dist(u.x, u.y, t.x, t.y);
-      if (d > def.range) slideMove(sim.world, u, u.x + ((t.x - u.x) / d) * spd, u.y + ((t.y - u.y) / d) * spd);
+      if (d > def.range + 16) slideMove(sim.world, u, u.x + ((t.x - u.x) / d) * spd, u.y + ((t.y - u.y) / d) * spd);
       else if (u.cd <= 0) {
         u.cd = def.cd;
         hurtCreep(sim, t, Math.round(def.dmg * (1 + 0.25 * (home.lvl - 1))), u.owner);
@@ -1331,7 +1374,13 @@ function stepBot(sim, p) {
   if (p.botRetreat) {
     if (frac > 0.9) p.botRetreat = false;
     else {
-      p.moveTo = { x: home.x - Math.sign(home.x) * (home.r + 90), y: home.y - Math.sign(home.y) * (home.r + 90) };
+      let hx = home.x - Math.sign(home.x) * (home.r + 90), hy = home.y - Math.sign(home.y) * (home.r + 90);
+      let hd2 = dist(p.x, p.y, hx, hy);
+      for (const sp of sim.world.springs) {            /* nearest drink wins */
+        const d = dist(p.x, p.y, sp.x, sp.y);
+        if (d < hd2) { hd2 = d; hx = sp.x; hy = sp.y; }
+      }
+      p.moveTo = { x: hx, y: hy };
       return;
     }
   } else if (frac < 0.35) { p.botRetreat = true; return; }
@@ -1432,7 +1481,7 @@ function stepNeutral(sim, n) {
     return;
   }
   const d = dist(n.x, n.y, t.x, t.y);
-  if (d > def.range) slideMove(sim.world, n, n.x + ((t.x - n.x) / d) * def.spd, n.y + ((t.y - n.y) / d) * def.spd);
+  if (d > def.range + 18) slideMove(sim.world, n, n.x + ((t.x - n.x) / d) * def.spd, n.y + ((t.y - n.y) / d) * def.spd);
   else if (n.cd <= 0) {
     n.cd = 10;
     addFx(sim, 'hit', t.x, t.y);
@@ -1543,6 +1592,79 @@ function stepBld(sim, b) {
   }
 }
 
+/* ---------------- collision: real hitboxes, no ghosting through the war ----------------
+   Units (heroes, creeps, neutrals) are soft bodies: overlapping pairs push
+   apart a little each tick, so crowds flow but nobody skates through anybody.
+   Towers and buildings are hard: units get shoved fully outside them.
+   Fliers only bump other fliers and ignore ground clutter entirely. */
+
+function resolveCollisions(sim) {
+  const movers = [];
+  for (const p of sim.players.values()) {
+    if (p.hero && !p.dead) movers.push({ u: p, r: heroDef(p).r, air: false, isHero: true });
+  }
+  for (const team of [0, 1]) for (const u of creepsOf(sim, team)) {
+    const d = creepDef(team, u.type);
+    movers.push({ u, r: d.r || 12, air: !!d.air });
+  }
+  for (const n of sim.neutrals) movers.push({ u: n, r: NTYPES[n.type].r, air: false });
+
+  /* spatial buckets so this stays cheap with 200 bodies on the field */
+  const CS = 150, buckets = new Map();
+  const bkey = (x, y) => (Math.floor(x / CS) + 1000) * 100000 + (Math.floor(y / CS) + 1000);
+  movers.forEach((m, i) => {
+    const k = bkey(m.u.x, m.u.y);
+    if (!buckets.has(k)) buckets.set(k, []);
+    buckets.get(k).push(i);
+  });
+  const nudge = (m, nx, ny) => { if (walkable(sim.world, nx, ny)) { m.u.x = nx; m.u.y = ny; } };
+  for (let i = 0; i < movers.length; i++) {
+    const a = movers[i];
+    const bi = Math.floor(a.u.x / CS), bj = Math.floor(a.u.y / CS);
+    for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+      const cell = buckets.get((bi + di + 1000) * 100000 + (bj + dj + 1000));
+      if (!cell) continue;
+      for (const j of cell) {
+        if (j <= i) continue;
+        const b = movers[j];
+        if (a.air !== b.air) continue;
+        const dx = b.u.x - a.u.x, dy = b.u.y - a.u.y;
+        const d = Math.hypot(dx, dy), min = a.r + b.r;
+        if (d >= min) continue;
+        const push = (min - Math.max(d, 0.01)) * 0.3;
+        const nx = d > 0.01 ? dx / d : Math.cos(i * 2.4), ny = d > 0.01 ? dy / d : Math.sin(i * 2.4);
+        nudge(a, a.u.x - nx * push, a.u.y - ny * push);
+        nudge(b, b.u.x + nx * push, b.u.y + ny * push);
+      }
+    }
+  }
+
+  /* hard structures: towers, buildings, and both keeps */
+  const statics = [];
+  for (const tw of sim.etowers) statics.push({ x: tw.x, y: tw.y, r: ETOWER.r });
+  for (const tw of sim.ptowers) statics.push({ x: tw.x, y: tw.y, r: ETOWER.r });
+  for (const b of sim.blds) statics.push({ x: b.x, y: b.y, r: BLD[b.type].r });
+  for (const m of movers) {
+    if (m.air) continue;
+    for (const st of statics) {
+      let dx = m.u.x - st.x, dy = m.u.y - st.y;
+      let d = Math.hypot(dx, dy);
+      const min = m.r + st.r;
+      if (d >= min) continue;
+      if (d < 0.01) { dx = 1; dy = 0; d = 1; }       /* dead-center? shove east */
+      nudge(m, st.x + (dx / d) * min, st.y + (dy / d) * min);
+    }
+    if (!m.isHero) {                                 /* creeps & neutrals respect the keeps */
+      for (const team of [0, 1]) {
+        const bb = baseOf(team);
+        const dx = m.u.x - bb.x, dy = m.u.y - bb.y;
+        const d = Math.hypot(dx, dy);
+        if (d < bb.r - 6 && d > 0.01) nudge(m, bb.x + (dx / d) * (bb.r - 6), bb.y + (dy / d) * (bb.r - 6));
+      }
+    }
+  }
+}
+
 /* ---------------- the master tick ---------------- */
 
 function stepSim(sim) {
@@ -1582,9 +1704,18 @@ function stepSim(sim) {
       if (f.kind === 'field' && f.team !== p.team && dist(p.x, p.y, f.x, f.y) <= f.r) applySlowHero(p, f.slow, 3);
     }
     const hdR = heroDef(p);
-    if (hdR.regen && p.hp < p.maxhp) p.hp = Math.min(p.maxhp, p.hp + p.maxhp * hdR.regen);
+    const inCombat = sim.tick - (p.hurtAt || -999) <= REGEN_OOC;
+    if (hdR.regen && p.hp < p.maxhp && !inCombat) p.hp = Math.min(p.maxhp, p.hp + p.maxhp * hdR.regen);
+    const rest = hdR.range > 100 ? RANGED_REST : 1;   /* skirmishers recover quickest */
     if (dist(p.x, p.y, myBase.x, myBase.y) < FOUNTAIN_R && p.hp < p.maxhp) {
-      p.hp = Math.min(p.maxhp, p.hp + p.maxhp * 0.0025);
+      p.hp = Math.min(p.maxhp, p.hp + p.maxhp * FOUNTAIN_HEAL * rest);
+    }
+    for (const sp of sim.world.springs) {
+      if (p.hp < p.maxhp && dist(p.x, p.y, sp.x, sp.y) < SPRING_R) {
+        p.hp = Math.min(p.maxhp, p.hp + p.maxhp * SPRING_HEAL * rest);
+        if (sim.tick % 20 === 0) addFx(sim, 'heal', sp.x, sp.y, undefined, undefined, 60);
+        break;
+      }
     }
     for (let i = 0; i < 3; i++) if (p.cds[i] > 0) p.cds[i]--;
     const spd = speedOf(p) * (1 - (p.slow || 0)) * (p.frenzy > 0 ? 1.35 : 1) * (p.haste > 0 ? 1.4 : 1);
@@ -1612,6 +1743,8 @@ function stepSim(sim) {
       p.rx = p.x; p.ry = p.y;
       revealCircle(sim, p.x, p.y, REVEAL_R);
     }
+    if (!Number.isFinite(p.coins)) p.coins = 0;          // self-heal any corrupted wallet
+    if (!Number.isFinite(p.xp)) { p.xp = 0; }
     if (sim.tick % 10 === 0) p.coins += COIN_TRICKLE;
 
     /* auto-attack: opposing creeps → neutrals → opposing towers/blds → their base */
@@ -1720,7 +1853,7 @@ function snapshot(sim) {
   const pl = [];
   for (const id of sim.order) {
     const p = sim.players.get(id);
-    const nextXp = p.lvl >= 10 ? 1 : XP_LVL[p.lvl - 1];
+    const nextXp = p.lvl >= LVL_MAX ? 1 : XP_LVL[p.lvl - 1];
     const prevXp = p.lvl <= 1 ? 0 : XP_LVL[p.lvl - 2];
     pl.push([
       p.seat, p.hero ? HERO_IDX.indexOf(p.hero) : -1,
@@ -1729,7 +1862,7 @@ function snapshot(sim) {
       p.cds[0], p.cds[1], p.cds[2],
       p.lvl, p.kills, p.armor > 0 ? 1 : 0,
       p.up.dmg, p.up.hp, p.up.spd, p.up.pow,
-      p.lvl >= 10 ? 100 : Math.round(((p.xp - prevXp) / (nextXp - prevXp)) * 100),
+      p.lvl >= LVL_MAX ? 100 : Math.round(((p.xp - prevXp) / (nextXp - prevXp)) * 100),
       p.team,
     ]);
   }
@@ -1874,6 +2007,24 @@ function drawTerrainRaw(g, world) {
     g.beginPath(); g.arc(c.x, c.y, 120, 0, Math.PI * 2); g.stroke(); g.setLineDash([]);
     g.fillStyle = 'rgba(122,77,33,.5)';
     for (let i = 0; i < 3; i++) { g.beginPath(); g.arc(c.x - 30 + i * 30, c.y + 70, 5, 0, Math.PI * 2); g.fill(); }
+  }
+
+  /* soda springs — pastel pools that mend anyone who wades in */
+  for (const sp of world.springs) {
+    g.save(); g.translate(sp.x, sp.y);
+    g.fillStyle = '#fdeff5';
+    g.beginPath(); g.ellipse(0, 0, 128, 96, 0, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#e8a7c3'; g.lineWidth = 10;
+    g.beginPath(); g.ellipse(0, 0, 128, 96, 0, 0, Math.PI * 2); g.stroke();
+    g.fillStyle = '#f9c8dd';
+    g.beginPath(); g.ellipse(0, 0, 92, 66, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#fff';
+    for (const [bx, by, br] of [[-40, -18, 9], [26, 10, 12], [-6, 30, 7], [42, -28, 8]]) {
+      g.beginPath(); g.arc(bx, by, br, 0, Math.PI * 2); g.fill();
+    }
+    g.fillStyle = '#e86a9a'; g.font = 'bold 40px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('💗', 0, -2);
+    g.restore();
   }
 
   /* elevation ridges + tree thickets — the walls of the wilds */
@@ -2096,10 +2247,15 @@ const upscale = (z) => Math.max(1, 0.5 / z);
 
 function drawBld(g, row, seats, z, now) {
   const [, seat, tIdx, x, y, lvl, hpPct, boosted] = row;
+  const horde = row[8] === 1;                            /* hard-candy side builds DARK */
+  const BODY = horde ? '#4b3a58' : '#fff0dd';            /* cream walls → obsidian candy */
+  const PANEL = horde ? '#6b4f86' : '#fdfdfb';
+  const TENT = horde ? '#3d2f4d' : '#fff8f0';
+  const GOLD = horde ? '#c95cff' : '#ffd93d';            /* gilding → glowing crystal */
   const type = BTYPE[tIdx];
   const s = seats[seat];
   const color = s ? s.color : '#cccccc';
-  const dark = shade(color, 0.7);
+  const dark = horde ? '#241a30' : shade(color, 0.7);
   const k = upscale(z);
   g.save(); g.translate(x, y); g.scale(k, k);
   g.fillStyle = 'rgba(40,20,50,.18)';                      /* ground shadow */
@@ -2108,7 +2264,7 @@ function drawBld(g, row, seats, z, now) {
 
   if (type === 'turret') {
     /* tapered candy tower with an owner-colored gumball dome */
-    g.fillStyle = '#fff0dd';
+    g.fillStyle = BODY;
     g.beginPath(); g.moveTo(-20, 24); g.lineTo(-14, -10); g.lineTo(14, -10); g.lineTo(20, 24); g.closePath();
     g.fill(); g.stroke();
     g.lineWidth = 2;
@@ -2122,13 +2278,13 @@ function drawBld(g, row, seats, z, now) {
     g.beginPath(); g.arc(12, -18, 4.5, 0, Math.PI * 2); g.fill(); g.stroke();   /* gumball barrel */
   } else if (type === 'launcher') {
     /* rocket battery: cream bunker, two owner-colored rockets aimed at the sky */
-    g.fillStyle = '#fff0dd';
+    g.fillStyle = BODY;
     rr(g, -24, 2, 48, 22, 8); g.fill(); g.stroke();
     g.fillStyle = color;
     rr(g, -24, 16, 48, 8, 4); g.fill(); g.stroke();
     for (const [rx, tilt] of [[-10, -0.22], [10, 0.22]]) {
       g.save(); g.translate(rx, 2); g.rotate(tilt);
-      g.fillStyle = '#fdfdfb';
+      g.fillStyle = PANEL;
       rr(g, -6, -22, 12, 26, 5); g.fill(); g.stroke();
       g.fillStyle = color;
       g.beginPath(); g.moveTo(-7, -20); g.lineTo(0, -34); g.lineTo(7, -20); g.closePath(); g.fill(); g.stroke();
@@ -2138,7 +2294,7 @@ function drawBld(g, row, seats, z, now) {
     }
   } else if (type === 'mortar') {
     /* marshmallow pot with a big lobber tube */
-    g.fillStyle = '#fff0dd';
+    g.fillStyle = BODY;
     g.beginPath(); g.arc(0, 8, 22, Math.PI, 0); g.lineTo(22, 20); g.quadraticCurveTo(0, 27, -22, 20);
     g.closePath(); g.fill(); g.stroke();
     g.fillStyle = color;
@@ -2149,7 +2305,7 @@ function drawBld(g, row, seats, z, now) {
     g.fillStyle = '#3a2038';
     g.beginPath(); g.ellipse(0, -33, 8, 4, 0, 0, Math.PI * 2); g.fill();
     g.restore();
-    g.fillStyle = '#fdfdfb';                               /* marshmallow ammo */
+    g.fillStyle = PANEL;                               /* marshmallow ammo */
     g.beginPath(); g.arc(13, 0, 5, 0, Math.PI * 2); g.fill(); g.stroke();
   } else if (type === 'syrup') {
     /* honey jar with an owner-colored lid, mid-drip */
@@ -2169,7 +2325,7 @@ function drawBld(g, row, seats, z, now) {
     g.beginPath(); g.moveTo(-30, 22); g.lineTo(0, -26); g.lineTo(30, 22); g.closePath(); g.fill(); g.stroke();
     g.fillStyle = shade(color, 0.85);
     g.beginPath(); g.moveTo(-30, 22); g.lineTo(-8, 22); g.lineTo(0, -26); g.closePath(); g.fill(); g.stroke();
-    g.fillStyle = '#fff8f0';                               /* door flap */
+    g.fillStyle = TENT;                               /* door flap */
     g.beginPath(); g.moveTo(-9, 22); g.lineTo(0, 4); g.lineTo(9, 22); g.closePath(); g.fill(); g.stroke();
     g.lineWidth = 2.5;
     g.beginPath(); g.moveTo(0, -26); g.lineTo(0, -40); g.stroke();
@@ -2188,13 +2344,18 @@ function drawBld(g, row, seats, z, now) {
     face(g, 0, -2, 1.1, 'smile');                          /* it WANTS to be chewed */
   }
 
+  if (horde) {                                           /* rock-candy beacon */
+    const pulse = 0.6 + Math.sin(now * 0.006 + x) * 0.3;
+    g.fillStyle = `rgba(255,92,138,${pulse})`;
+    g.beginPath(); g.moveTo(0, -34); g.lineTo(4, -26); g.lineTo(0, -22); g.lineTo(-4, -26); g.closePath(); g.fill();
+  }
   if (boosted) {
-    g.strokeStyle = '#ffd93d'; g.lineWidth = 3.5; g.setLineDash([8, 6]); g.lineDashOffset = -(now * 0.05) % 14;
+    g.strokeStyle = GOLD; g.lineWidth = 3.5; g.setLineDash([8, 6]); g.lineDashOffset = -(now * 0.05) % 14;
     g.beginPath(); g.arc(0, 0, 40, 0, Math.PI * 2); g.stroke(); g.setLineDash([]);
   }
   if (hpPct < 100) hpBar(g, 0, 30, 52, hpPct / 100);
   if (lvl > 1) {
-    g.fillStyle = '#ffd93d'; g.strokeStyle = '#b98a13'; g.lineWidth = 1.5;
+    g.fillStyle = GOLD; g.strokeStyle = '#b98a13'; g.lineWidth = 1.5;
     for (let i = 0; i < lvl; i++) {
       g.beginPath(); g.arc(-((lvl - 1) * 5.5) + i * 11, -42, 4, 0, Math.PI * 2); g.fill(); g.stroke();
     }
@@ -2291,6 +2452,19 @@ function drawEnemy(g, row, z, now) {
     g.beginPath(); g.arc(-19, 6 + Math.sin(w * 2) * 3, 6, 0, Math.PI * 2); g.fill(); g.stroke();
     g.beginPath(); g.arc(19, 6 - Math.sin(w * 2) * 3, 6, 0, Math.PI * 2); g.fill(); g.stroke();
     face(g, 0, -4, 1.15, 'angry');
+  } else if (type === 'imp') {
+    g.rotate(Math.sin(w * 5) * 0.07);
+    g.fillStyle = '#6b4f86';
+    g.beginPath(); g.arc(-5.5, -7, 3, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.beginPath(); g.arc(5.5, -7, 3, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.beginPath(); g.arc(0, 0, 8.5, Math.PI, 0); g.lineTo(8.5, 5); g.quadraticCurveTo(0, 9.5, -8.5, 5);
+    g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#c95cff';
+    g.beginPath(); g.moveTo(-6, -8); g.lineTo(-8, -13); g.lineTo(-3, -9); g.closePath(); g.fill();
+    g.beginPath(); g.moveTo(6, -8); g.lineTo(8, -13); g.lineTo(3, -9); g.closePath(); g.fill();
+    g.fillStyle = 'rgba(255,255,255,.3)';
+    g.beginPath(); g.arc(-3, -3, 2.5, 0, Math.PI * 2); g.fill();
+    face(g, 0, -1, 0.75, 'angry');
   } else if (type === 'eknight') {
     /* Sour Sergeant — armored lime brute with a cleaver */
     g.rotate(Math.sin(w * 3) * 0.05);
@@ -2401,12 +2575,19 @@ function drawHeroRow(g, row, seats, z, now, isMe) {
   g.beginPath(); g.ellipse(0, 13, 12, 4.5, 0, 0, Math.PI * 2); g.fill();
   g.rotate(Math.sin(w * 4) * 0.06);                        /* walking waddle */
 
-  /* body: color dome + skirt, like the Candy Kingdoms guards */
-  g.fillStyle = color;
+  /* body: color dome + skirt — the hard-candy side wears it DARK */
+  const hordeSide = HEROES[heroIdx].team === 1;
+  if (hordeSide) { g.strokeStyle = '#241a30'; }
+  g.fillStyle = hordeSide ? shade(color, 0.55) : color;
   g.beginPath(); g.arc(0, 2, 12, Math.PI, 0); g.lineTo(12, 8); g.quadraticCurveTo(0, 13, -12, 8);
   g.closePath(); g.fill(); g.stroke();
-  /* head */
-  g.fillStyle = '#ffe1bd';
+  if (hordeSide) {                                         /* crystal shards on the shoulders */
+    g.fillStyle = '#c95cff';
+    g.beginPath(); g.moveTo(-12, 2); g.lineTo(-16, -6); g.lineTo(-9, -2); g.closePath(); g.fill(); g.stroke();
+    g.beginPath(); g.moveTo(12, 2); g.lineTo(16, -6); g.lineTo(9, -2); g.closePath(); g.fill(); g.stroke();
+  }
+  /* head: warm gingerbread vs dusky rock-candy */
+  g.fillStyle = hordeSide ? '#b9a8cc' : '#ffe1bd';
   g.beginPath(); g.arc(0, -8, 8.5, 0, Math.PI * 2); g.fill(); g.stroke();
   face(g, 0, -8, 1, 'smile');
 
@@ -2757,6 +2938,14 @@ function drawScene(g, world, snap, seats, now, z, mySeat, fogCache) {
   drawFields(g, snap.fields || [], now);
   drawCastleAt(g, world.castle.x, world.castle.y, snap.c[0], snap.c[1], snap.chit, now);
   drawHordeBase(g, world.horde.x, world.horde.y, snap.hb[0], snap.hb[1], snap.hhit, now);
+  for (const sp of world.springs) {                  /* live shimmer on the pools */
+    g.save(); g.translate(sp.x, sp.y);
+    g.globalAlpha = 0.35 + Math.sin(now * 0.003 + sp.x) * 0.15;
+    g.strokeStyle = '#ff9fc6'; g.lineWidth = 6;
+    g.beginPath(); g.ellipse(0, 0, SPRING_R * 0.86, SPRING_R * 0.64, 0, 0, Math.PI * 2); g.stroke();
+    g.restore();
+    g.globalAlpha = 1;
+  }
   if (snap.csh) drawBaseShield(g, world.castle.x, world.castle.y, CASTLE.r * 1.9, '#7fd8ff', now);
   if (snap.hsh) drawBaseShield(g, world.horde.x, world.horde.y, HORDE.r * 1.75, '#c95cff', now);
   for (const t of snap.eb || []) drawETower(g, t, z, now, false);
@@ -3661,10 +3850,10 @@ export const __sim = {
   upgradeBld, upgradeHero, sellBld, castAbility, snapshot, walkable,
   hurtCreep, hurtNeutral, hurtTower, hurtBase, hurtETower, hurtHorde, addXp,
   makeComp, spawnCreep, spawnGroups, spawnAIHero, creepsOf, towersOf, baseOf, stepBld, stepCreep, stepTower, heroesOfTeam, pvpHit, oppHeroes,
-  addBot, balanceTeams, stepBot,
-  towerDmgVsCreep, towerDmgVsHero, baseShielded,
+  addBot, balanceTeams, stepBot, baseShielded,
   HEROES, BLD, CLASSES, ETYPES, ATYPES, NTYPES, ETOWER, CASTLE, HORDE,
   E_SKIN, A_SKIN, BASE_RING, BASE_ZONE, TEAM_NAME, WORLD_W, WORLD_H,
-  WALK_COLS, WALK_ROWS, WALK_CELL, SPAWN_EVERY, GROUP_SIZE, XP_LVL,
+  WALK_COLS, WALK_ROWS, WALK_CELL, SPAWN_EVERY, GROUP_SIZE, XP_LVL, LVL_MAX, SPRING_R, SPRING_HEAL, N_SPRINGS,
+  resolveCollisions, towerDmgVsHero, towerDmgVsCreep,
   revealCircle, fogIdx,
 };

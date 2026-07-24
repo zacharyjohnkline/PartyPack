@@ -44,6 +44,11 @@ that side's OWN roster:
 
 Rival heroes genuinely fight: auto-attacks, abilities, meteors, and syrup all
 work on the other team's players, and takedowns pay coins + XP by level.
+The two sides are unmistakable at a glance: gummi heroes and buildings are
+warm cream-and-candy, while the hard-candy horde wears the dark look —
+obsidian-purple structures capped with pulsing pink crystal beacons, dusky
+heroes with crystal shards on their shoulders, and barracks that train
+grumpy purple Candy Imps instead of gummy guards.
 
 The war is perfectly fair — every 20 seconds both bases march an IDENTICAL
 group of 10 (same classes, different costumes). Creep waves attack enemy
@@ -70,9 +75,17 @@ roster with 🤖 badges.
 The wilds are now a proper FOREST: hundreds of tree thickets and rock ridges
 carve real routes between the lanes, and the entire map rim is tree-walled —
 there is no strolling around the outside. Eight neutral camps (Taffy Wolves,
-Brittle Bears, the Elder Rockjaw) pay coins and hero XP. Heroes grow through
-battle-earned LEVELS and tiered GEAR from the 🎒 phone shop, mid-fight, no
-pauses; idle ground artillery besieges enemy structures.
+Brittle Bears, the Elder Rockjaw) pay coins and hero XP, and four pink SODA
+SPRINGS — mirrored across the map so neither side gets a closer drink — heal
+any hero who wades in, either team. Sustain is a real choice now: melee
+heroes regenerate anywhere but ONLY out of combat (taking a hit pauses it
+for 5 s), while ranged heroes have no passive regen but recover 50% faster
+at fountains and springs — tank the front line, or skirmish and dart back
+for a quick drink. Heroes grow through battle-earned LEVELS (now a long road all the way
+to 25) and tiered GEAR from the 🎒 phone shop, mid-fight, no pauses; idle
+ground artillery besieges enemy structures. And everything has a real HITBOX:
+heroes, creeps, neutrals, towers, and buildings are solid bodies — crowds
+flow and shove, but nobody skates through anybody.
 
 Phones are full controllers: joystick, three hero powers, a live view of your
 hero, and the shop overlay for gear, building, and tower upgrades.
