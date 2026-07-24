@@ -335,3 +335,11 @@
 /* rapid taps on tablets: no zoom, no text-selection loupe */
 .ck-ctrl, .ck-ctrl * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 .ck-panel, .ck-panel * { touch-action: manipulation; }
+
+/* ---------- phase 5: hero pin ---------- */
+.ck-heromove, .ck-herojoin {
+  flex: 0 0 auto; width: 46px; padding: 11px 0;
+  border-radius: 12px; border: 3px solid #b28ae0; background: #fff;
+  font-family: inherit; font-size: 1rem; cursor: pointer;
+}
+.ck-heromove:active, .ck-herojoin:active { transform: scale(.92); }

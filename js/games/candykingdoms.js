@@ -32,7 +32,7 @@ const WORLD_R = BASE_R + PLOT_R * 0.6 + 90;
 const LANE_STEPS = 6;
 
 const CASTLE = { hp: 1000, r: 56 };
-const ROYAL = { cost: 500, time: 1800, hpBonus: 600 };   // ~3 minutes
+const ROYAL = { cost: 5000, time: 1800, hpBonus: 600 };   // a late-game monument, ~3 minutes
 
 const WORKER = { hp: 40, speed: 3.1, cost: 30, time: 40, r: 10, mineTicks: 18, fleeR: 110 };
 const ENLIST_COST = 10;
@@ -344,7 +344,7 @@ function setMode(sim, seat, mode) {
   p.mode = mode;
   if (mode === 'stop') {
     for (const u of sim.units) {
-      if (u.seat === seat && COMBAT.includes(u.kind) && (u.st === 'path' || u.st === 'hold')) {
+      if (u.seat === seat && COMBAT.includes(u.kind) && !u.manual && (u.st === 'path' || u.st === 'hold')) {
         u.st = 'stand'; u.path = null;
       }
     }
@@ -359,17 +359,98 @@ function setTarget(sim, seat, target) {
   if (t && !t.elim && target !== seat) p.target = target;
 }
 
+/* which way should an army face from this spot? toward its chosen prey,
+   otherwise toward the arena where the fighting is */
+function faceAngle(sim, seat, x, y) {
+  const p = sim.players[seat];
+  if (p.target >= 0 && sim.players[p.target] && !sim.players[p.target].elim) {
+    const tb = sim.world.arms[p.target].base;
+    return Math.atan2(tb.y - y, tb.x - x);
+  }
+  if (Math.hypot(x, y) > 90) return Math.atan2(-y, -x);
+  const home = sim.world.arms[seat].base;
+  return Math.atan2(-home.y, -home.x);
+}
+
+/* battle ranks: melee wall in front, slingers behind, dragonflies on the
+   wings, hero out front with the banner. Returns [{u, x, y}, ...] */
+function formationSlots(units, ax, ay, fa) {
+  const fwd = { x: Math.cos(fa), y: Math.sin(fa) };
+  const side = { x: -fwd.y, y: fwd.x };
+  const melee = [], ranged = [], air = [];
+  let hero = null;
+  for (const u of units) {
+    if (u.kind === 'hero') hero = u;
+    else if (u.kind === 'archer') ranged.push(u);
+    else if (u.kind === 'flyer') air.push(u);
+    else melee.push(u);
+  }
+  const out = [];
+  const sideProj = (u) => (u.x - ax) * side.x + (u.y - ay) * side.y;
+  const clampW = (s) => {
+    const r = Math.hypot(s.x, s.y);
+    if (r > WORLD_R - 20) { s.x *= (WORLD_R - 20) / r; s.y *= (WORLD_R - 20) / r; }
+    return s;
+  };
+  const place = (arr, startBack, spacing, perRow) => {
+    arr.sort((a, b) => sideProj(a) - sideProj(b));   // keep left units left: less cross-walking
+    for (let i = 0; i < arr.length; i++) {
+      const row = Math.floor(i / perRow), col = i % perRow;
+      const inRow = Math.min(perRow, arr.length - row * perRow);
+      const off = (col - (inRow - 1) / 2) * spacing;
+      const back = startBack + row * 28;
+      out.push(clampW({ u: arr[i], x: ax - fwd.x * back + side.x * off, y: ay - fwd.y * back + side.y * off }));
+    }
+  };
+  const perRow = Math.max(4, Math.min(10, Math.ceil(melee.length / 2)));
+  place(melee, 0, 26, perRow);
+  const meleeRows = Math.ceil(melee.length / perRow) || 1;
+  place(ranged, meleeRows * 28 + 44, 30, Math.max(3, Math.min(8, Math.ceil(ranged.length / 2))));
+  air.sort((a, b) => sideProj(a) - sideProj(b));
+  const wing = (perRow * 26) / 2 + 55;
+  const half = Math.ceil(air.length / 2);
+  for (let i = 0; i < air.length; i++) {
+    const left = i < half, k = left ? i : i - half;
+    out.push(clampW({ u: air[i], x: ax + side.x * (left ? -wing : wing) - fwd.x * (12 + k * 26), y: ay + side.y * (left ? -wing : wing) - fwd.y * (12 + k * 26) }));
+  }
+  if (hero) out.push(clampW({ u: hero, x: ax + fwd.x * 20, y: ay + fwd.y * 20 }));
+  return out;
+}
+
 function gather(sim, seat, x, y) {
   const p = sim.players[seat];
   if (!p || p.elim || sim.over) return false;
   if (!isFinite(x) || !isFinite(y) || Math.hypot(x, y) > WORLD_R) return false;
   p.mode = 'stop';
   sim.fx.push({ t: 'flag', x, y });
-  for (const u of sim.units) {
-    if (u.seat === seat && COMBAT.includes(u.kind) && u.hp > 0) {
-      u.st = 'rally'; u.path = null; u.rx = x; u.ry = y;
-    }
+  const army = sim.units.filter((u) => u.seat === seat && COMBAT.includes(u.kind) && u.hp > 0);
+  const fa = faceAngle(sim, seat, x, y);
+  for (const s of formationSlots(army, x, y, fa)) {
+    const u = s.u;
+    u.st = 'rally'; u.path = null; u.rx = s.x; u.ry = s.y;
+    u.manual = false;   // GATHER is the recall horn — even a pinned hero comes home
   }
+  return true;
+}
+
+/* a personal pin for your hero: walk there, hold there, ignore army orders */
+function heroPin(sim, seat, x, y) {
+  const p = sim.players[seat];
+  if (!p || p.elim || sim.over) return false;
+  if (!isFinite(x) || !isFinite(y) || Math.hypot(x, y) > WORLD_R) return false;
+  const h = heroUnit(sim, seat);
+  if (!h) return false;
+  h.manual = true;
+  h.st = 'rally'; h.path = null; h.rx = x; h.ry = y;
+  sim.fx.push({ t: 'pin', x, y });
+  return true;
+}
+
+function heroRejoin(sim, seat) {
+  const h = heroUnit(sim, seat);
+  if (!h) return false;
+  h.manual = false;
+  if (h.st === 'rally') h.st = 'stand';
   return true;
 }
 
@@ -691,12 +772,38 @@ function stepSim(sim) {
   }
   sim.storms = sim.storms.filter((s) => s.t > 0);
 
+  /* armies waiting in the arena draw up into ranks */
+  if (sim.tick % 25 === 0) {
+    for (const p of sim.players) {
+      if (p.elim) continue;
+      const holders = sim.units.filter((u) => u.seat === p.seat && u.st === 'hold' && u.hp > 0);
+      if (!holders.length) continue;
+      const groups = new Map();
+      for (const u of holders) {
+        let bi = 0, bd = Infinity;
+        for (const arm of world.arms) {
+          const d = dist(u.x, u.y, arm.hold.x, arm.hold.y);
+          if (d < bd) { bd = d; bi = arm.seat; }
+        }
+        if (!groups.has(bi)) groups.set(bi, []);
+        groups.get(bi).push(u);
+      }
+      for (const [ai, list] of groups) {
+        const anchor = world.arms[ai].hold;
+        const fa = faceAngle(sim, p.seat, anchor.x, anchor.y);
+        for (const s of formationSlots(list, anchor.x, anchor.y, fa)) {
+          s.u.hx = s.x; s.u.hy = s.y;
+        }
+      }
+    }
+  }
+
   /* Send mode: continuous pressure */
   for (const p of sim.players) {
     if (p.elim || p.mode !== 'send') continue;
     let horn = false;
     for (const u of sim.units) {
-      if (u.seat !== p.seat || !COMBAT.includes(u.kind) || u.hp <= 0) continue;
+      if (u.seat !== p.seat || !COMBAT.includes(u.kind) || u.hp <= 0 || u.manual) continue;
       if (u.st === 'muster' || u.st === 'stand') { assignAdvance(sim, u, p); horn = true; }
     }
     if (horn && sim.tick % 20 === 0) {
@@ -764,7 +871,7 @@ function stepSim(sim) {
 
     /* ---- troops & heroes ---- */
     if (u.st === 'rally') {
-      if (dist(u.x, u.y, u.rx, u.ry) > 55) { moveToward(u, u.rx, u.ry, spd); continue; }
+      if (dist(u.x, u.y, u.rx, u.ry) > 16) { moveToward(u, u.rx, u.ry, spd); continue; }
       u.st = 'stand';
     }
 
@@ -786,6 +893,10 @@ function stepSim(sim) {
                 if (dist(e.x, e.y, e2.x, e2.y) <= def.splash) dmgUnit(sim, e2, Math.ceil(amt / 2), u.seat);
               }
             }
+          }
+          if (def.range >= 100 && foe.d < 55 && e.kind !== 'flyer') {
+            /* someone's in my face — back up, keep shooting */
+            moveToward(u, u.x + (u.x - e.x), u.y + (u.y - e.y), spd * 0.9);
           }
         } else moveToward(u, e.x, e.y, spd);
         continue;
@@ -834,6 +945,8 @@ function stepSim(sim) {
       const p = sim.players[u.seat];
       if (p.mode === 'send' && p.target >= 0 && !sim.players[p.target].elim) {
         u.st = 'path'; u.path = pushPath(world, p.target); u.pi = 0;
+      } else if (u.hx !== undefined && dist(u.x, u.y, u.hx, u.hy) > 16) {
+        moveToward(u, u.hx, u.hy, spd);   // drift into rank
       }
     }
   }
@@ -886,7 +999,7 @@ function stepSim(sim) {
    u:  [id, seat, kindIdx, x, y, hp, aux, shield]  aux = carry | heroPick*100+lvl
    b:  [id, seat, typeIdx, x, y, hp, prog%, queueLen, upgrade%]
    pl: [seat, candy, castleHp, elim, mode, target, supUsed, supCap, ready,
-        castleMax, tier, heroPick, heroSt, heroLvl, ultSt, reviveCost] */
+        castleMax, tier, heroPick, heroSt, heroLvl, ultSt, reviveCost, heroPinned] */
 function snapshot(sim) {
   const u = sim.units.map((x) => [
     x.id, x.seat, KIND_IDX.indexOf(x.kind), Math.round(x.x), Math.round(x.y), x.hp,
@@ -909,7 +1022,7 @@ function snapshot(sim) {
       supplyUsed(sim, p.seat), supplyCap(sim, p.seat),
       sim.units.filter((x) => x.seat === p.seat && COMBAT.includes(x.kind) && (x.st === 'muster' || x.st === 'stand')).length,
       p.castleMax, p.tier, p.heroPick, heroSt[p.heroSt], p.heroLvl,
-      ultSt, heroRevive(p.heroLvl).cost,
+      ultSt, heroRevive(p.heroLvl).cost, h && h.manual ? 1 : 0,
     ];
   });
   const fx = sim.fx.map((f) => [f.t, Math.round(f.x), Math.round(f.y), f.x2 !== undefined ? Math.round(f.x2) : 0, f.y2 !== undefined ? Math.round(f.y2) : 0]);
@@ -1281,6 +1394,7 @@ function drawHero(g, x, y, color, hp, heroCode, shield, wobble) {
 
 function fxLife(t) {
   if (t === 'flag') return 2.6;
+  if (t === 'pin') return 2.0;
   if (t === 'storm') return 1.3;
   if (t === 'slam' || t === 'shieldcast' || t === 'level') return 1.2;
   return 0.9;
@@ -1293,7 +1407,14 @@ function drawFx(g, fx, now) {
     if (age > life) continue;
     const k = age / life;
     g.save(); g.translate(f.x, f.y); g.globalAlpha = 1 - k;
-    if (f.t === 'flag') {
+    if (f.t === 'pin') {
+      g.globalAlpha = k < 0.8 ? 1 : (1 - k) * 5;
+      g.font = '30px sans-serif'; g.textAlign = 'center';
+      g.fillText('📍', 0, -Math.max(0, (0.25 - k)) * 60);
+      g.strokeStyle = '#b380ff'; g.lineWidth = 3; g.setLineDash([6, 8]);
+      g.beginPath(); g.arc(0, 4, 22, 0, Math.PI * 2); g.stroke();
+      g.setLineDash([]);
+    } else if (f.t === 'flag') {
       g.globalAlpha = k < 0.8 ? 1 : (1 - k) * 5;
       g.font = '36px sans-serif'; g.textAlign = 'center';
       g.fillText('🚩', 0, Math.sin(now * 0.006) * 3);
@@ -1520,6 +1641,10 @@ function createHost(ctx) {
     else if (data.k === 'upgrade') upgradeCastle(sim, seat);
     else if (data.k === 'hero') heroCommand(sim, seat, typeof data.pick === 'number' ? data.pick : -1);
     else if (data.k === 'ult') castUlt(sim, seat);
+    else if (data.k === 'heropin') {
+      if (typeof data.x === 'number' && typeof data.y === 'number') heroPin(sim, seat, data.x, data.y);
+    }
+    else if (data.k === 'herojoin') heroRejoin(sim, seat);
     else if (data.k === 'gather') {
       if (typeof data.x === 'number' && typeof data.y === 'number') gather(sim, seat, data.x, data.y);
     }
@@ -1807,6 +1932,11 @@ function createController(ctx) {
       const pickBtn = e.target.closest('[data-hero]');
       if (pickBtn) { ctx.send({ k: 'hero', pick: parseInt(pickBtn.dataset.hero, 10) }); return; }
       if (e.target.closest('.ck-revive')) { ctx.send({ k: 'hero', pick: -1 }); return; }
+      if (e.target.closest('.ck-heromove')) {
+        if (placing === '__heropin') stopPlacing(); else startPlacing('__heropin');
+        return;
+      }
+      if (e.target.closest('.ck-herojoin')) { ctx.send({ k: 'herojoin' }); heroSig = ''; return; }
       if (e.target.closest('.ck-ult')) { ctx.send({ k: 'ult' }); }
     });
   }
@@ -1816,7 +1946,7 @@ function createController(ctx) {
     const r = ctx.root;
     r.querySelectorAll('.ck-build').forEach((b) => b.classList.toggle('is-on', b.dataset.type === type));
     r.querySelector('.ck-warbtn-gather').classList.toggle('is-arming', type === '__rally');
-    r.querySelector('.ck-place-what').textContent = type === '__rally' ? 'your rally flag 🚩' : BLD[type].label;
+    r.querySelector('.ck-place-what').textContent = type === '__rally' ? 'your rally flag 🚩' : type === '__heropin' ? "your hero's pin 📍" : BLD[type].label;
     r.querySelector('.ck-place-hint').classList.remove('hidden');
   }
   function stopPlacing() {
@@ -1910,8 +2040,8 @@ function createController(ctx) {
 
   function renderHero(hasWizard, out) {
     const r = ctx.root;
-    const st = me[12], pick = me[11], lvl = me[13], ultSt = me[14], revCost = me[15];
-    const sig = [hasWizard, out, st, pick, lvl, ultSt, revCost, me[1] >= (cfg ? cfg.summon : 0)].join('|');
+    const st = me[12], pick = me[11], lvl = me[13], ultSt = me[14], revCost = me[15], pinned = me[16];
+    const sig = [hasWizard, out, st, pick, lvl, ultSt, revCost, pinned, me[1] >= (cfg ? cfg.summon : 0)].join('|');
     if (sig === heroSig) return;
     heroSig = sig;
     const el = r.querySelector('.ck-hero');
@@ -1939,7 +2069,9 @@ function createController(ctx) {
         : ultSt === 1
           ? `<button class="ck-ult" disabled>⏳ ${h.ult}</button>`
           : `<button class="ck-ult" disabled>🔒 ${h.ult} at Lv6</button>`;
-      el.innerHTML = `<div class="ck-hero-row"><span class="ck-hero-chip">${h.emoji} Lv${lvl}</span>${ult}</div>`;
+      const pinBtns = `<button class="ck-heromove" title="Move hero">📍</button>` +
+        (pinned ? `<button class="ck-herojoin" title="Rejoin army">🔗</button>` : '');
+      el.innerHTML = `<div class="ck-hero-row"><span class="ck-hero-chip">${h.emoji} Lv${lvl}${pinned ? ' 📍' : ''}</span>${pinBtns}${ult}</div>`;
     }
   }
 
@@ -1990,6 +2122,12 @@ function createController(ctx) {
       stopPlacing();
       return;
     }
+    if (placing === '__heropin') {
+      ctx.send({ k: 'heropin', x: Math.round(pt.x), y: Math.round(pt.y) });
+      heroSig = '';
+      stopPlacing();
+      return;
+    }
     if (!placing) { trySelect(pt); return; }
     ghost = pt;
     if (ghostValid()) {
@@ -2020,7 +2158,7 @@ function createController(ctx) {
   }
 
   function ghostValid() {
-    if (!ghost || !placing || placing === '__rally' || !cur) return false;
+    if (!ghost || !placing || placing === '__rally' || placing === '__heropin' || !cur) return false;
     const snap = cur.snap;
     const buildings = snap.b.map((b) => ({ seat: b[1], type: TYPE_IDX[b[2]], x: b[3], y: b[4], prog: b[6] / 100 }));
     const units = snap.u.map((u) => ({ seat: u[1], x: u[3], y: u[4] }));
@@ -2108,7 +2246,7 @@ function createController(ctx) {
       },
     }, now);
 
-    if (placing && placing !== '__rally') {
+    if (placing && placing !== '__rally' && placing !== '__heropin') {
       const s = seats[mySeat];
       g.lineWidth = 4; g.strokeStyle = s.color; g.globalAlpha = 0.5; g.setLineDash([6, 12]);
       for (const b of cur.snap.b) {
@@ -2130,6 +2268,9 @@ function createController(ctx) {
     } else if (placing === '__rally' && ghost) {
       g.font = '34px sans-serif'; g.textAlign = 'center';
       g.fillText('🚩', ghost.x, ghost.y);
+    } else if (placing === '__heropin' && ghost) {
+      g.font = '30px sans-serif'; g.textAlign = 'center';
+      g.fillText('📍', ghost.x, ghost.y);
     }
 
     for (const id of [selWorkerBld, selGuardBld]) {
@@ -2176,6 +2317,7 @@ export const __sim = {
   buildWorld, makeSim, stepSim, train, build, canPlace, setMode, setTarget, snapshot,
   gather, minersAt, inTowerZone, onRoad, speedMul, enlist, upgradeCastle, heroCommand,
   castUlt, heroUnit, heroDef, dmgUnit, supplyCap, supplyUsed, nearestArm, nearestEnemy,
+  heroPin, heroRejoin, formationSlots, faceAngle,
   WORKER, GUARD: UNITS.guard, UNITS, HEROES, BLD, CASTLE, ROYAL, MINE, HERO_SUMMON,
   SUPPLY_BASE, SUPPLY_PER_SHACK, START_CANDY, START_WORKERS, TICK_MS, XP_LVL,
   SLAM, STORM, SHIELD, SIEGE_MELEE, ULT_CD, ENLIST_COST,
