@@ -29,11 +29,18 @@ import { escapeHtml } from '../util.js';
 const TICK_MS = 100;               // 10 sim ticks per second
 const SNAP_EVERY = 2;              // snapshot to phones every 200 ms
 
-const WORLD_HALF = 1900;           // square map, ~1 min corner to corner on foot
+const WORLD_W = 2140;              // half-extents of a 16:9 widescreen map
+const WORLD_H = 1204;              // (4280 x 2408 — under a minute corner to corner)
 const N_PATHS = 3;                 // three lanes: high road, mid road, low road
 
-const CASTLE = { r: 95, hp: 3000, x: 1420, y: 1420 };    // player base, bottom-right
-const HORDE  = { r: 120, x: -1420, y: -1420 };           // enemy cavern, top-left
+const CASTLE = { r: 95, hp: 3000, x: 1720, y: 784 };     // player base, bottom-right
+const HORDE  = { r: 120, x: -1720, y: -784 };            // enemy cavern, top-left
+
+/* fog of war — coarse grid, revealed by hero travel, never re-fogs */
+const FOG_CELL = 150;
+const FOG_COLS = Math.ceil((WORLD_W * 2) / FOG_CELL);    // 29 (fits an int32 row)
+const FOG_ROWS = Math.ceil((WORLD_H * 2) / FOG_CELL);    // 17
+const REVEAL_R = 430;              // how far a walking hero can see
 
 const PREP_FIRST = 450;            // 45 s before wave 1 (learn + build)
 const PREP_T = 200;                // 20 s between later waves
@@ -191,9 +198,9 @@ function buildWorld(seed) {
   }
   /* each lane is a list of corner-ish control points, joined by wiggly legs */
   const ctrls = [
-    [H, { x: 350, y: -1430 }, { x: 1430, y: -1350 }, { x: 1430, y: 200 }, C],   // high road
+    [H, { x: 300, y: -980 }, { x: 1780, y: -880 }, { x: 1800, y: 120 }, C],     // high road
     [H, C],                                                                      // mid road
-    [H, { x: -1350, y: 350 }, { x: -1430, y: 1430 }, { x: 200, y: 1430 }, C],   // low road
+    [H, { x: -1800, y: -120 }, { x: -1780, y: 880 }, { x: -300, y: 980 }, C],   // low road
   ];
   for (const c of ctrls) {
     const pts = [{ x: H.x, y: H.y }];
@@ -208,17 +215,56 @@ function buildWorld(seed) {
   /* decorative candy scenery, deterministic so every screen matches */
   const PROP_EMOJI = ['🌲', '🍄', '🌸', '🪨', '🌷', '🎄', '🍩'];
   for (let i = 0; i < 90; i++) {
-    const x = (rnd() * 2 - 1) * (WORLD_HALF - 120), y = (rnd() * 2 - 1) * (WORLD_HALF - 120);
+    const x = (rnd() * 2 - 1) * (WORLD_W - 120), y = (rnd() * 2 - 1) * (WORLD_H - 120);
     if (paths.some((pp) => distToPath(pp, x, y) < 100)) continue;
     if (dist(x, y, C.x, C.y) < 320 || dist(x, y, H.x, H.y) < 320) continue;
     props.push({ x: Math.round(x), y: Math.round(y), e: PROP_EMOJI[(rnd() * PROP_EMOJI.length) | 0], s: 26 + rnd() * 26 });
   }
-  return { paths, props, half: WORLD_HALF, castle: { x: C.x, y: C.y, r: CASTLE.r }, horde: { ...HORDE } };
+  return { paths, props, w: WORLD_W, h: WORLD_H, castle: { x: C.x, y: C.y, r: CASTLE.r }, horde: { ...HORDE } };
 }
 
 /* where can a tower go? shared by host validation and the phone's ghost */
-function canPlace(world, blds, x, y) {
-  if (Math.abs(x) > WORLD_HALF * 0.95 || Math.abs(y) > WORLD_HALF * 0.95) return false;
+/* fog helpers — shared by the sim, placement rules, and both renderers */
+function fogIdx(x, y) {
+  const i = clamp(Math.floor((x + WORLD_W) / FOG_CELL), 0, FOG_COLS - 1);
+  const j = clamp(Math.floor((y + WORLD_H) / FOG_CELL), 0, FOG_ROWS - 1);
+  return j * FOG_COLS + i;
+}
+function revealCircle(sim, x, y, r) {
+  const i0 = clamp(Math.floor((x - r + WORLD_W) / FOG_CELL), 0, FOG_COLS - 1);
+  const i1 = clamp(Math.floor((x + r + WORLD_W) / FOG_CELL), 0, FOG_COLS - 1);
+  const j0 = clamp(Math.floor((y - r + WORLD_H) / FOG_CELL), 0, FOG_ROWS - 1);
+  const j1 = clamp(Math.floor((y + r + WORLD_H) / FOG_CELL), 0, FOG_ROWS - 1);
+  let changed = false;
+  for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+    const idx = j * FOG_COLS + i;
+    if (sim.fog[idx]) continue;
+    const cx = -WORLD_W + (i + 0.5) * FOG_CELL, cy = -WORLD_H + (j + 0.5) * FOG_CELL;
+    if (dist(x, y, cx, cy) <= r) { sim.fog[idx] = 1; changed = true; }
+  }
+  if (changed) sim.fogV++;
+}
+function packFog(fog) {
+  const rows = [];
+  for (let j = 0; j < FOG_ROWS; j++) {
+    let bits = 0;
+    for (let i = 0; i < FOG_COLS; i++) if (fog[j * FOG_COLS + i]) bits |= (1 << i);
+    rows.push(bits);
+  }
+  return rows;
+}
+function unpackFog(rows) {
+  const fog = new Uint8Array(FOG_COLS * FOG_ROWS);
+  for (let j = 0; j < FOG_ROWS; j++) for (let i = 0; i < FOG_COLS; i++) {
+    if (rows[j] & (1 << i)) fog[j * FOG_COLS + i] = 1;
+  }
+  return fog;
+}
+
+/* fog is optional so headless tests can probe pure geometry */
+function canPlace(world, blds, x, y, fog) {
+  if (Math.abs(x) > WORLD_W * 0.95 || Math.abs(y) > WORLD_H * 0.95) return false;
+  if (fog && !fog[fogIdx(x, y)]) return false;
   if (dist(x, y, CASTLE.x, CASTLE.y) < CASTLE.r + 75) return false;
   if (dist(x, y, HORDE.x, HORDE.y) < HORDE.r + 130) return false;
   for (const p of world.paths) if (distToPath(p, x, y) < 48) return false;
@@ -232,7 +278,7 @@ function canPlace(world, blds, x, y) {
 /* ================= sim ================= */
 
 function makeSim(seed) {
-  return {
+  const sim = {
     seed,
     tick: 0, phase: 'pick', pickLeft: PICK_FAILSAFE,
     wave: 0, prepLeft: 0, nextId: 1,
@@ -242,9 +288,14 @@ function makeSim(seed) {
     order: [],               // playerIds in seat order
     enemies: [], allies: [], blds: [], impacts: [], fx: [],
     spawnQueue: [], activePaths: [],
+    fog: new Uint8Array(FOG_COLS * FOG_ROWS), fogV: 0,
     over: null,              // 'win' | 'lose'
     stats: { built: 0, waveReached: 0 },
   };
+  /* both bases start on the map — everything between them is unexplored */
+  revealCircle(sim, CASTLE.x, CASTLE.y, 650);
+  revealCircle(sim, HORDE.x, HORDE.y, 480);
+  return sim;
 }
 
 function addPlayer(sim, playerId) {
@@ -353,6 +404,7 @@ function build(sim, playerId, type, x, y) {
   const def = BLD[type];
   const cost = Math.round(def.cost * (heroDef(p).discount || 1));
   if (p.coins < cost) return 'coins';
+  if (!sim.fog[fogIdx(x, y)]) return 'fog';
   if (!canPlace(sim.world, sim.blds, x, y)) return 'spot';
   p.coins -= cost;
   const b = { id: sim.nextId++, owner: playerId, type, x: Math.round(x), y: Math.round(y),
@@ -744,8 +796,12 @@ function stepSim(sim) {
       if (d < spd * 1.5) p.moveTo = null;
       else { p.x += ((p.moveTo.x - p.x) / d) * spd; p.y += ((p.moveTo.y - p.y) / d) * spd; }
     }
-    p.x = clamp(p.x, -WORLD_HALF, WORLD_HALF);
-    p.y = clamp(p.y, -WORLD_HALF, WORLD_HALF);
+    p.x = clamp(p.x, -WORLD_W, WORLD_W);
+    p.y = clamp(p.y, -WORLD_H, WORLD_H);
+    if (p.rx === undefined || dist(p.x, p.y, p.rx, p.ry) > FOG_CELL * 0.4) {
+      p.rx = p.x; p.ry = p.y;
+      revealCircle(sim, p.x, p.y, REVEAL_R);
+    }
     const dc = dist(p.x, p.y, CASTLE.x, CASTLE.y);
     if (dc < CASTLE.r + 20 && dc > 0) {
       const k = (CASTLE.r + 20) / dc;
@@ -867,6 +923,8 @@ function snapshot(sim) {
     pl, e, a, b, fields, fx: sim.fx,
   };
   snap.chit = sim.tick - sim.castle.hitAt < 12 ? 1 : 0;
+  snap.fogV = sim.fogV;
+  snap.fog = packFog(sim.fog);
   if (sim.over) snap.over = sim.over;
   sim.fx = [];
   return snap;
@@ -907,16 +965,16 @@ function face(g, x, y, sc, mood) {
 }
 
 function drawTerrain(g, world, activePaths, now) {
-  const H = world.half;
-  /* square meadow with a candy border */
-  const grad = g.createLinearGradient(-H, -H, H, H);
+  const W = world.w, H = world.h;
+  /* widescreen meadow with a candy border */
+  const grad = g.createLinearGradient(-W, -H, W, H);
   grad.addColorStop(0, '#9ed98a'); grad.addColorStop(1, '#b8e6a0');
   g.fillStyle = grad;
-  rr(g, -H, -H, H * 2, H * 2, 130); g.fill();
+  rr(g, -W, -H, W * 2, H * 2, 130); g.fill();
   g.strokeStyle = '#5ea75d'; g.lineWidth = 30;
-  rr(g, -H, -H, H * 2, H * 2, 130); g.stroke();
+  rr(g, -W, -H, W * 2, H * 2, 130); g.stroke();
   g.strokeStyle = 'rgba(255,255,255,.35)'; g.lineWidth = 8;
-  rr(g, -H + 24, -H + 24, (H - 24) * 2, (H - 24) * 2, 110); g.stroke();
+  rr(g, -W + 24, -H + 24, (W - 24) * 2, (H - 24) * 2, 110); g.stroke();
 
   /* the three sugar lanes */
   for (let i = 0; i < world.paths.length; i++) {
@@ -1525,18 +1583,40 @@ function drawFields(g, fields, now) {
   }
 }
 
+/* soft-edged fog overlay: 1 px per cell, scaled up with smoothing */
+function drawFog(g, fogArr, fogV, cache) {
+  if (!cache.cnv) {
+    cache.cnv = document.createElement('canvas');
+    cache.cnv.width = FOG_COLS; cache.cnv.height = FOG_ROWS;
+  }
+  if (cache.v !== fogV) {
+    cache.v = fogV;
+    const fg = cache.cnv.getContext('2d');
+    fg.clearRect(0, 0, FOG_COLS, FOG_ROWS);
+    fg.fillStyle = 'rgba(22,16,32,0.88)';
+    for (let j = 0; j < FOG_ROWS; j++) for (let i = 0; i < FOG_COLS; i++) {
+      if (!fogArr[j * FOG_COLS + i]) fg.fillRect(i, j, 1, 1);
+    }
+  }
+  g.imageSmoothingEnabled = true;
+  g.drawImage(cache.cnv, -WORLD_W, -WORLD_H, WORLD_W * 2, WORLD_H * 2);
+}
+
 /* one full frame from a snapshot — both screens use this */
-function drawScene(g, world, snap, seats, now, z, mySeat) {
+function drawScene(g, world, snap, seats, now, z, mySeat, fogCache) {
   drawTerrain(g, world, snap.ap, now);
   drawFields(g, snap.fields || [], now);
   drawCastleAt(g, world.castle.x, world.castle.y, snap.c[0], snap.c[1], snap.chit, now);
   for (const b of snap.b) drawBld(g, b, seats, z, now);
   for (const a of snap.a) drawGummy(g, a, seats, z);
-  const ground = snap.e.filter((e) => !ETYPES[ETYPE[e[1]]].air);
-  const air = snap.e.filter((e) => ETYPES[ETYPE[e[1]]].air);
+  /* creatures still hidden in the fog aren't drawn */
+  const seen = (e) => !snap.fogArr || snap.fogArr[fogIdx(e[2], e[3])];
+  const ground = snap.e.filter((e) => !ETYPES[ETYPE[e[1]]].air && seen(e));
+  const air = snap.e.filter((e) => ETYPES[ETYPE[e[1]]].air && seen(e));
   for (const e of ground) drawEnemy(g, e, z, now);
   for (const p of snap.pl) drawHeroRow(g, p, seats, z, now, mySeat !== undefined && p[0] === mySeat);
   for (const e of air) drawEnemy(g, e, z, now);
+  if (snap.fogArr && fogCache) drawFog(g, snap.fogArr, snap.fogV, fogCache);
   drawFx(g, snap.fxLive || [], now, z);
 }
 
@@ -1566,7 +1646,7 @@ function lerpView(prev, cur, alpha) {
   return { ...s, pl, e, a: al };
 }
 
-const fitZoom = (w, h) => Math.min(w, h) / (WORLD_HALF * 2.12);
+const fitZoom = (w, h) => Math.min(w / (WORLD_W * 2.12), h / (WORLD_H * 2.12));
 
 /* ================= HOST (big screen) ================= */
 
@@ -1597,6 +1677,7 @@ function createHost(ctx) {
   let fxLive = [];
   let canvas, g, cam = { x: 0, y: 0, z: 0.2, tz: 0.2 };
   let dragging = null, lastPhase = '', lastWave = 0;
+  const fogCache = { v: -1, cnv: null };
   let onResize;
 
   function seats() {
@@ -1794,11 +1875,12 @@ function createHost(ctx) {
     const alpha = (performance.now() - cur.at) / (TICK_MS * SNAP_EVERY);
     const view = lerpView(prev, cur, alpha);
     view.fxLive = fxLive;
+    view.fogArr = sim.fog; view.fogV = sim.fogV;
     g.save();
     g.translate(canvas.width / 2, canvas.height / 2);
     g.scale(cam.z, cam.z);
     g.translate(-cam.x, -cam.y);
-    drawScene(g, sim.world, view, seats(), now, cam.z);
+    drawScene(g, sim.world, view, seats(), now, cam.z, undefined, fogCache);
     g.restore();
   }
 
@@ -1815,7 +1897,8 @@ function createHost(ctx) {
       case 'build': {
         const res = build(sim, playerId, data.type, +data.x || 0, +data.y || 0);
         if (res === 'coins') ctx.sendTo(playerId, { k: 'toast', msg: 'Not enough coins! 🪙' });
-        else if (res === 'spot') ctx.sendTo(playerId, { k: 'toast', msg: "Can't build there — too close to a trail or building" });
+        else if (res === 'fog') ctx.sendTo(playerId, { k: 'toast', msg: '🌫️ Unexplored! Walk a hero out there to scout it first' });
+        else if (res === 'spot') ctx.sendTo(playerId, { k: 'toast', msg: "Can't build there — too close to a lane or building" });
         break;
       }
       case 'up': upgradeHero(sim, playerId, data.what); break;
@@ -1915,7 +1998,9 @@ function createController(ctx) {
   let lastMv = 0, lastSent = '0,0';
   let ready = false, myHero = null;
   let touch = null;                  // prep map pan/pinch state
-  let onResize;
+  let onResize, ro = null;
+  let fog = null, fogVSeen = -1;
+  const fogCache = { v: -1, cnv: null };
 
   const $q = (s) => ctx.root.querySelector(s);
 
@@ -1940,10 +2025,17 @@ function createController(ctx) {
     }
 
     onResize = () => {
-      canvas.width = canvas.clientWidth * devicePixelRatio;
-      canvas.height = canvas.clientHeight * devicePixelRatio;
+      const w = Math.max(1, Math.round(canvas.clientWidth * devicePixelRatio));
+      const h = Math.max(1, Math.round(canvas.clientHeight * devicePixelRatio));
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+      /* re-clamp the prep-map zoom whenever the layout reshapes the canvas */
+      if (mapCam) mapCam.z = clamp(mapCam.z, fitZoom(w, h) * 0.9, 1.4);
     };
     window.addEventListener('resize', onResize);
+    /* the canvas changes size when panels show/hide, with no window resize —
+       a ResizeObserver keeps the pixel buffer matched so the map never stretches */
+    ro = new ResizeObserver(onResize);
+    ro.observe(canvas);
     onResize();
 
     bindStick();
@@ -2094,7 +2186,7 @@ function createController(ctx) {
     outer: for (let r = 90; r <= 600; r += 60) {
       for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
         const x = hx + Math.cos(a) * r, y = hy + Math.sin(a) * r;
-        if (canPlace(world, cur.snap.b, x, y)) { placing.x = x; placing.y = y; break outer; }
+        if (canPlace(world, cur.snap.b, x, y, fog)) { placing.x = x; placing.y = y; break outer; }
       }
     }
     /* zoom the build map in on the ghost so it's big and tappable */
@@ -2113,6 +2205,7 @@ function createController(ctx) {
     }
     if (data.k === 'toast') { toast(data.msg); return; }
     if (data.k !== 'snap') return;
+    if (data.fog && data.fogV !== fogVSeen) { fogVSeen = data.fogV; fog = unpackFog(data.fog); }
     prev = cur;
     cur = { at: performance.now(), snap: data };
     const now = performance.now();
@@ -2293,11 +2386,12 @@ function createController(ctx) {
     const alpha = (performance.now() - cur.at) / (TICK_MS * SNAP_EVERY);
     const view = lerpView(prev, cur, alpha);
     view.fxLive = fxLive;
+    view.fogArr = fog; view.fogV = fogVSeen;
 
     let c;
     if (mode === 'wave' || mode === 'over') {
       const me = view.pl.find((r) => r[0] === mySeat);
-      const z = Math.min(canvas.width, canvas.height) / 950;
+      const z = Math.min(canvas.width, canvas.height) / 680;   // snug over-the-shoulder view
       if (me) { cam.x = me[2]; cam.y = me[3]; }
       cam.z = z;
       c = cam;
@@ -2312,12 +2406,12 @@ function createController(ctx) {
     g.translate(canvas.width / 2, canvas.height / 2);
     g.scale(c.z, c.z);
     g.translate(-c.x, -c.y);
-    drawScene(g, world, view, seats, now, c.z, mySeat);
+    drawScene(g, world, view, seats, now, c.z, mySeat, fogCache);
 
     /* tower ghost while placing */
     if (placing && placing.x !== undefined) {
       const def = BLD[placing.type];
-      const ok = canPlace(world, snap.b, placing.x, placing.y);
+      const ok = canPlace(world, snap.b, placing.x, placing.y, fog);
       g.save(); g.translate(placing.x, placing.y);
       g.globalAlpha = 0.75;
       if (def.range) {
@@ -2340,7 +2434,7 @@ function createController(ctx) {
         g.restore();
       }
       $q('.gg-place-ok').disabled = !ok;
-      const hint = ok ? '🟢 Good spot — hit Place!' : '🔴 Too close to a trail or building — tap elsewhere';
+      const hint = ok ? '🟢 Good spot — hit Place!' : '🔴 Blocked — in fog, or too close to a lane/building';
       const hintEl = $q('.gg-place-hint');
       if (hintEl.textContent !== hint) hintEl.textContent = hint;
     }
@@ -2350,6 +2444,7 @@ function createController(ctx) {
   function destroy() {
     cancelAnimationFrame(raf);
     window.removeEventListener('resize', onResize);
+    if (ro) ro.disconnect();
     ctx.root.innerHTML = '';
   }
 
@@ -2373,5 +2468,5 @@ export default {
 export const __sim = {
   buildWorld, canPlace, makeSim, addPlayer, pickHero, stepSim, build,
   upgradeBld, upgradeHero, sellBld, castAbility, snapshot, buildWave,
-  HEROES, BLD, ETYPES, CASTLE, HORDE, LAST_WAVE, WORLD_HALF,
+  HEROES, BLD, ETYPES, CASTLE, HORDE, LAST_WAVE, WORLD_W, WORLD_H, revealCircle, fogIdx,
 };
