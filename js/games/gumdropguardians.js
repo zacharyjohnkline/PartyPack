@@ -1,9 +1,10 @@
 /* ============================================================
    Gumdrop Guardians — co-op tower defense for the whole couch.
 
-   Up to six heroes defend the Great Gingerbread Castle at the
-   center of a big candy wilderness. Enemy hordes pour in from
-   portals at the edge of the world along winding sugar trails.
+   Up to six heroes defend the Great Gingerbread Castle in one
+   corner of a big square candy wilderness. The horde pours out
+   of the Rock Candy Cavern in the OPPOSITE corner and marches
+   down three winding lanes — high road, middle road, low road.
    Between waves everyone gets ~20 seconds to spend their candy
    coins: upgrade YOUR hero and YOUR towers (nobody can touch a
    tower they didn't build), or plop down new defenses.
@@ -28,12 +29,11 @@ import { escapeHtml } from '../util.js';
 const TICK_MS = 100;               // 10 sim ticks per second
 const SNAP_EVERY = 2;              // snapshot to phones every 200 ms
 
-const WORLD_R = 2700;              // world radius — ~1 min end to end on foot
-const PORTAL_R = 2520;             // enemy portals sit on this ring
-const N_PATHS = 5;                 // winding trails to the castle
-const PATH_PTS = 9;                // waypoints per trail
+const WORLD_HALF = 1900;           // square map, ~1 min corner to corner on foot
+const N_PATHS = 3;                 // three lanes: high road, mid road, low road
 
-const CASTLE = { r: 95, hp: 3000 };
+const CASTLE = { r: 95, hp: 3000, x: 1420, y: 1420 };    // player base, bottom-right
+const HORDE  = { r: 120, x: -1420, y: -1420 };           // enemy cavern, top-left
 
 const PREP_FIRST = 450;            // 45 s before wave 1 (learn + build)
 const PREP_T = 200;                // 20 s between later waves
@@ -44,14 +44,14 @@ const START_COINS = 140;
 /* heroes — pick one at the start, it's yours for the match.
    Three abilities each (see ABILITIES below). */
 const HEROES = [
-  { id: 'knight',  name: 'Sir Crunch-a-Lot', emoji: '🛡️', desc: 'Tough as toffee. Stuns, taunts, and soaks damage up close.',
-    hp: 420, dmg: 22, range: 40,  cd: 8, speed: 9.0, r: 20, hitAir: false },
+  { id: 'knight',  name: 'Sir Crunch-a-Lot', emoji: '🛡️', desc: 'Melee tank — huge health that regrows even mid-fight.',
+    hp: 780, dmg: 22, range: 40,  cd: 8, speed: 9.0, r: 20, hitAir: false, regen: 0.0014 },
   { id: 'ranger',  name: 'Huckleberry Fin',  emoji: '🏹', desc: 'Long-range berry archer. Shreds fliers and snipes brutes.',
     hp: 260, dmg: 14, range: 190, cd: 7, speed: 9.6, r: 18, hitAir: true },
   { id: 'mage',    name: 'Minty Merlin',     emoji: '🧙', desc: 'Splashy spells, slows, meteors, and a team heal.',
     hp: 240, dmg: 11, range: 170, cd: 9, speed: 8.7, r: 18, hitAir: true, splash: 45 },
-  { id: 'builder', name: 'Gingerbread Greta', emoji: '🔧', desc: 'Her towers cost 20% less. Repairs, overclocks, decoy walls.',
-    hp: 320, dmg: 12, range: 60,  cd: 8, speed: 9.3, r: 19, hitAir: false, discount: 0.8 },
+  { id: 'builder', name: 'Gingerbread Greta', emoji: '🔧', desc: 'Melee bruiser & builder — towers cost 20% less, health regrows.',
+    hp: 600, dmg: 12, range: 60,  cd: 8, speed: 9.3, r: 19, hitAir: false, discount: 0.8, regen: 0.0014 },
 ];
 const HERO_IDX = HEROES.map((h) => h.id);
 
@@ -173,42 +173,54 @@ function distToPath(path, x, y) {
 
 function buildWorld(seed) {
   const rnd = mulberry32(seed);
-  const paths = [], portals = [], props = [];
-  for (let i = 0; i < N_PATHS; i++) {
-    const a = -Math.PI / 2 + (i * 2 * Math.PI) / N_PATHS + (rnd() - 0.5) * 0.35;
-    const px = Math.cos(a) * PORTAL_R, py = Math.sin(a) * PORTAL_R;
-    portals.push({ x: Math.round(px), y: Math.round(py), angle: a });
-    const perp = { x: -Math.sin(a), y: Math.cos(a) };
-    const wiggle = (rnd() - 0.5) * 2;                     // each trail bends its own way
+  const paths = [], props = [];
+  const H = { x: HORDE.x, y: HORDE.y }, C = { x: CASTLE.x, y: CASTLE.y };
+
+  /* subdivide a leg with a seeded perpendicular sway (zero at the ends) */
+  function leg(a, b, n, amp) {
     const pts = [];
-    for (let k = 0; k <= PATH_PTS; k++) {
-      const t = k / PATH_PTS;
-      const r = PORTAL_R + (CASTLE.r + 55 - PORTAL_R) * t;
-      const sway = Math.sin(t * Math.PI) * 330 * wiggle + Math.sin(t * Math.PI * 2.7 + i) * 120;
-      pts.push({
-        x: Math.round(Math.cos(a) * r + perp.x * sway),
-        y: Math.round(Math.sin(a) * r + perp.y * sway),
-      });
+    const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
+    const px = -dy / len, py = dx / len;
+    const bend = (rnd() - 0.5) * 2;
+    for (let k = 1; k <= n; k++) {
+      const t = k / n;
+      const sway = Math.sin(t * Math.PI) * amp * bend + Math.sin(t * Math.PI * 2.6) * amp * 0.3 * (rnd() - 0.5) * 2;
+      pts.push({ x: Math.round(a.x + dx * t + px * sway), y: Math.round(a.y + dy * t + py * sway) });
     }
-    pts.push({ x: 0, y: 0 });                            // trails end at the castle
+    return pts;
+  }
+  /* each lane is a list of corner-ish control points, joined by wiggly legs */
+  const ctrls = [
+    [H, { x: 350, y: -1430 }, { x: 1430, y: -1350 }, { x: 1430, y: 200 }, C],   // high road
+    [H, C],                                                                      // mid road
+    [H, { x: -1350, y: 350 }, { x: -1430, y: 1430 }, { x: 200, y: 1430 }, C],   // low road
+  ];
+  for (const c of ctrls) {
+    const pts = [{ x: H.x, y: H.y }];
+    for (let i = 0; i < c.length - 1; i++) {
+      const segLen = dist(c[i].x, c[i].y, c[i + 1].x, c[i + 1].y);
+      pts.push(...leg(c[i], c[i + 1], Math.max(2, Math.round(segLen / 380)), Math.min(180, segLen * 0.16)));
+    }
+    pts[pts.length - 1] = { x: C.x, y: C.y };            // lanes end at the castle
     paths.push(pts);
   }
+
   /* decorative candy scenery, deterministic so every screen matches */
   const PROP_EMOJI = ['🌲', '🍄', '🌸', '🪨', '🌷', '🎄', '🍩'];
   for (let i = 0; i < 90; i++) {
-    const a = rnd() * Math.PI * 2, r = 260 + rnd() * (WORLD_R - 320);
-    const x = Math.cos(a) * r, y = Math.sin(a) * r;
-    if (paths.some((p) => distToPath(p, x, y) < 90)) continue;
+    const x = (rnd() * 2 - 1) * (WORLD_HALF - 120), y = (rnd() * 2 - 1) * (WORLD_HALF - 120);
+    if (paths.some((pp) => distToPath(pp, x, y) < 100)) continue;
+    if (dist(x, y, C.x, C.y) < 320 || dist(x, y, H.x, H.y) < 320) continue;
     props.push({ x: Math.round(x), y: Math.round(y), e: PROP_EMOJI[(rnd() * PROP_EMOJI.length) | 0], s: 26 + rnd() * 26 });
   }
-  return { paths, portals, props, r: WORLD_R, castle: { x: 0, y: 0, r: CASTLE.r } };
+  return { paths, props, half: WORLD_HALF, castle: { x: C.x, y: C.y, r: CASTLE.r }, horde: { ...HORDE } };
 }
 
 /* where can a tower go? shared by host validation and the phone's ghost */
 function canPlace(world, blds, x, y) {
-  if (dist(x, y, 0, 0) > world.r * 0.97) return false;
-  if (dist(x, y, 0, 0) < CASTLE.r + 75) return false;
-  for (const p of world.portals) if (dist(x, y, p.x, p.y) < 130) return false;
+  if (Math.abs(x) > WORLD_HALF * 0.95 || Math.abs(y) > WORLD_HALF * 0.95) return false;
+  if (dist(x, y, CASTLE.x, CASTLE.y) < CASTLE.r + 75) return false;
+  if (dist(x, y, HORDE.x, HORDE.y) < HORDE.r + 130) return false;
   for (const p of world.paths) if (distToPath(p, x, y) < 48) return false;
   for (const b of blds) {
     const bx = b.x !== undefined ? b.x : b[3], by = b.y !== undefined ? b.y : b[4];
@@ -240,7 +252,7 @@ function addPlayer(sim, playerId) {
   const seat = sim.order.length;
   const p = {
     id: playerId, seat, hero: null, connected: true,
-    x: 0, y: CASTLE.r + 60 + seat * 8, hp: 1, maxhp: 1,
+    x: CASTLE.x - CASTLE.r - 60, y: CASTLE.y - CASTLE.r - 60 - seat * 12, hp: 1, maxhp: 1,
     dead: false, respawn: 0, dir: { x: 0, y: 0 }, moveTo: null,
     coins: START_COINS + sim.wave * 10,
     up: { dmg: 0, hp: 0, spd: 0, pow: 0 },
@@ -262,9 +274,10 @@ function pickHero(sim, playerId, heroId) {
   if (!p || p.hero || !HERO_IDX.includes(heroId)) return;
   p.hero = heroId;
   p.maxhp = maxhpOf(p); p.hp = p.maxhp;
-  /* spawn heroes fanned out just south of the castle */
-  const a = Math.PI / 2 + (p.seat - 2.5) * 0.35;
-  p.x = Math.cos(a) * (CASTLE.r + 70); p.y = Math.sin(a) * (CASTLE.r + 70);
+  /* spawn heroes fanned out on the castle's map-facing side */
+  const a = Math.atan2(-CASTLE.y, -CASTLE.x) + (p.seat - 2.5) * 0.3;
+  p.x = CASTLE.x + Math.cos(a) * (CASTLE.r + 75);
+  p.y = CASTLE.y + Math.sin(a) * (CASTLE.r + 75);
   addFx(sim, 'spawn', p.x, p.y);
   /* everyone picked? on to the first build phase */
   if (sim.phase === 'pick') {
@@ -311,7 +324,7 @@ function buildWave(sim, wave) {
   }
   if (isBoss) {
     q.push({ delay: 30, type: 'boss', path: pathIds[0] });
-    addFx(sim, 'horn', 0, -WORLD_R * 0.5);
+    addFx(sim, 'horn', HORDE.x, HORDE.y);
   }
   q.sort((a, b) => a.delay - b.delay);
   sim.spawnQueue = q;
@@ -581,7 +594,7 @@ function stepEnemy(sim, e) {
   if (d < 30) {
     if (e.wp < path.length - 1) e.wp++;
   }
-  const dc = dist(e.x, e.y, 0, 0);
+  const dc = dist(e.x, e.y, CASTLE.x, CASTLE.y);
   if (dc <= CASTLE.r + def.range + 10) {                 // at the gates
     if (e.cd <= 0) {
       e.cd = 10;
@@ -712,12 +725,14 @@ function stepSim(sim) {
     if (p.dead) {
       if (--p.respawn <= 0) {
         p.dead = false; p.hp = p.maxhp;
-        p.x = 0; p.y = CASTLE.r + 60;
+        p.x = CASTLE.x - CASTLE.r - 60; p.y = CASTLE.y - CASTLE.r - 60;
         addFx(sim, 'spawn', p.x, p.y);
       }
       continue;
     }
     if (p.armor > 0) p.armor--;
+    const hdR = heroDef(p);
+    if (hdR.regen && p.hp < p.maxhp) p.hp = Math.min(p.maxhp, p.hp + p.maxhp * hdR.regen);
     for (let i = 0; i < 3; i++) if (p.cds[i] > 0) p.cds[i]--;
     const spd = speedOf(p);
     if (sim.phase === 'wave' && (p.dir.x || p.dir.y)) {
@@ -729,9 +744,14 @@ function stepSim(sim) {
       if (d < spd * 1.5) p.moveTo = null;
       else { p.x += ((p.moveTo.x - p.x) / d) * spd; p.y += ((p.moveTo.y - p.y) / d) * spd; }
     }
-    const dc = dist(p.x, p.y, 0, 0);
-    if (dc > WORLD_R) { p.x *= WORLD_R / dc; p.y *= WORLD_R / dc; }
-    if (dc < CASTLE.r + 20 && dc > 0) { const k = (CASTLE.r + 20) / dc; p.x *= k; p.y *= k; }
+    p.x = clamp(p.x, -WORLD_HALF, WORLD_HALF);
+    p.y = clamp(p.y, -WORLD_HALF, WORLD_HALF);
+    const dc = dist(p.x, p.y, CASTLE.x, CASTLE.y);
+    if (dc < CASTLE.r + 20 && dc > 0) {
+      const k = (CASTLE.r + 20) / dc;
+      p.x = CASTLE.x + (p.x - CASTLE.x) * k;
+      p.y = CASTLE.y + (p.y - CASTLE.y) * k;
+    }
     /* hero auto-attack during waves */
     if (sim.phase === 'wave' && (!p.atkCd || --p.atkCd <= 0)) {
       const hd = heroDef(p);
@@ -759,7 +779,7 @@ function stepSim(sim) {
       sim.wave++;
       sim.stats.waveReached = sim.wave;
       buildWave(sim, sim.wave);
-      addFx(sim, 'horn', 0, 0);
+      addFx(sim, 'horn', HORDE.x, HORDE.y);
     }
     return;
   }
@@ -793,7 +813,7 @@ function stepSim(sim) {
   sim.impacts = sim.impacts.filter((im) => !im.done);
   sim.enemies = sim.enemies.filter((e) => e.hp > 0);
 
-  if (sim.castle.hp <= 0) { sim.castle.hp = 0; sim.over = 'lose'; addFx(sim, 'crumble', 0, 0); return; }
+  if (sim.castle.hp <= 0) { sim.castle.hp = 0; sim.over = 'lose'; addFx(sim, 'crumble', CASTLE.x, CASTLE.y); return; }
 
   /* wave cleared? */
   if (!sim.spawnQueue.length && !sim.enemies.length) {
@@ -803,7 +823,7 @@ function stepSim(sim) {
       p.hp = p.maxhp;                                    // heroes patch up between waves
     }
     for (const b of sim.blds) b.hp = b.maxhp;            // towers too — the castle doesn't
-    addFx(sim, 'clear', 0, 0);
+    addFx(sim, 'clear', CASTLE.x, CASTLE.y);
     if (sim.wave >= LAST_WAVE) { sim.over = 'win'; return; }
     startPrep(sim, PREP_T);
   }
@@ -854,16 +874,51 @@ function snapshot(sim) {
 
 /* ================= shared drawing ================= */
 
-function drawTerrain(g, world, activePaths, now) {
-  /* meadow */
-  const grad = g.createRadialGradient(0, 0, 200, 0, 0, world.r);
-  grad.addColorStop(0, '#b8e6a0'); grad.addColorStop(0.7, '#9ed98a'); grad.addColorStop(1, '#7cc274');
-  g.fillStyle = grad;
-  g.beginPath(); g.arc(0, 0, world.r, 0, Math.PI * 2); g.fill();
-  g.strokeStyle = '#5ea75d'; g.lineWidth = 26;
-  g.beginPath(); g.arc(0, 0, world.r, 0, Math.PI * 2); g.stroke();
+/* Candy Kingdoms-style helpers: darker shades + rounded rects */
+function shade(hex, k) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = Math.round(((n >> 16) & 255) * k), gg = Math.round(((n >> 8) & 255) * k), b = Math.round((n & 255) * k);
+  return `rgb(${r},${gg},${b})`;
+}
+function rr(g, x, y, w, h, r) {
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+function face(g, x, y, sc, mood) {
+  const ink = '#3a2038';
+  g.fillStyle = ink;
+  g.beginPath(); g.arc(x - 4.5 * sc, y, 1.9 * sc, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.arc(x + 4.5 * sc, y, 1.9 * sc, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = ink; g.lineWidth = 1.6 * sc; g.lineCap = 'round';
+  if (mood === 'angry') {                                  /* slanted brows + frown */
+    g.beginPath(); g.moveTo(x - 7 * sc, y - 5 * sc); g.lineTo(x - 2.5 * sc, y - 3 * sc); g.stroke();
+    g.beginPath(); g.moveTo(x + 7 * sc, y - 5 * sc); g.lineTo(x + 2.5 * sc, y - 3 * sc); g.stroke();
+    g.beginPath(); g.arc(x, y + 7 * sc, 3.4 * sc, 1.2 * Math.PI, 1.8 * Math.PI); g.stroke();
+  } else if (mood === 'ko') {
+    g.beginPath(); g.moveTo(x - 3 * sc, y + 5 * sc); g.lineTo(x + 3 * sc, y + 5 * sc); g.stroke();
+  } else {
+    g.beginPath(); g.arc(x, y + 2.5 * sc, 3.4 * sc, 0.25 * Math.PI, 0.75 * Math.PI); g.stroke();
+  }
+}
 
-  /* sugar trails */
+function drawTerrain(g, world, activePaths, now) {
+  const H = world.half;
+  /* square meadow with a candy border */
+  const grad = g.createLinearGradient(-H, -H, H, H);
+  grad.addColorStop(0, '#9ed98a'); grad.addColorStop(1, '#b8e6a0');
+  g.fillStyle = grad;
+  rr(g, -H, -H, H * 2, H * 2, 130); g.fill();
+  g.strokeStyle = '#5ea75d'; g.lineWidth = 30;
+  rr(g, -H, -H, H * 2, H * 2, 130); g.stroke();
+  g.strokeStyle = 'rgba(255,255,255,.35)'; g.lineWidth = 8;
+  rr(g, -H + 24, -H + 24, (H - 24) * 2, (H - 24) * 2, 110); g.stroke();
+
+  /* the three sugar lanes */
   for (let i = 0; i < world.paths.length; i++) {
     const p = world.paths[i];
     const hot = activePaths && activePaths.includes(i);
@@ -878,7 +933,7 @@ function drawTerrain(g, world, activePaths, now) {
     g.beginPath(); g.moveTo(p[0].x, p[0].y);
     for (let k = 1; k < p.length; k++) g.lineTo(p[k].x, p[k].y);
     g.stroke();
-    if (hot) {                                            // marching dashes on live trails
+    if (hot) {                                            /* marching dashes on live lanes */
       g.strokeStyle = 'rgba(214,86,60,.55)'; g.lineWidth = 8;
       g.setLineDash([26, 40]); g.lineDashOffset = -(now * 0.04) % 66;
       g.beginPath(); g.moveTo(p[0].x, p[0].y);
@@ -887,20 +942,40 @@ function drawTerrain(g, world, activePaths, now) {
     }
   }
 
-  /* portals */
-  for (let i = 0; i < world.portals.length; i++) {
-    const pt = world.portals[i];
-    const hot = activePaths && activePaths.includes(i);
-    g.save(); g.translate(pt.x, pt.y);
-    g.fillStyle = hot ? '#5b2a63' : '#7a6a80';
-    g.beginPath(); g.arc(0, 0, 58, 0, Math.PI * 2); g.fill();
-    g.strokeStyle = hot ? '#c95cff' : '#a894b3'; g.lineWidth = 8;
-    if (hot) { g.setLineDash([14, 10]); g.lineDashOffset = -(now * 0.03) % 24; }
-    g.beginPath(); g.arc(0, 0, 58, 0, Math.PI * 2); g.stroke(); g.setLineDash([]);
-    g.font = '52px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText('🌀', 0, 2);
-    g.restore();
+  /* the Rock Candy Cavern — the horde's corner base */
+  const hb = world.horde, hot = activePaths && activePaths.length > 0;
+  g.save(); g.translate(hb.x, hb.y);
+  g.fillStyle = 'rgba(40,20,50,.25)';
+  g.beginPath(); g.ellipse(0, hb.r * 0.75, hb.r * 1.5, hb.r * 0.5, 0, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#4b3a58'; g.strokeStyle = '#332540'; g.lineWidth = 8;
+  g.beginPath(); g.arc(0, 0, hb.r * 1.25, Math.PI, 0); g.lineTo(hb.r * 1.25, hb.r * 0.7);
+  g.lineTo(-hb.r * 1.25, hb.r * 0.7); g.closePath(); g.fill(); g.stroke();
+  g.fillStyle = '#6b4f86';                                 /* rock-candy crystals on top */
+  for (const [cx, cy, cw, ch] of [[-90, -70, 40, 90], [-30, -110, 44, 120], [40, -85, 38, 95], [95, -45, 30, 70]]) {
+    g.beginPath(); g.moveTo(cx - cw / 2, cy + ch / 2); g.lineTo(cx, cy - ch / 2); g.lineTo(cx + cw / 2, cy + ch / 2);
+    g.closePath(); g.fill(); g.stroke();
   }
+  const mouth = 0.55 + (hot ? Math.sin(now * 0.004) * 0.08 : 0);
+  g.fillStyle = hot ? '#2a0f38' : '#241b2e';               /* cave mouth */
+  g.beginPath(); g.ellipse(0, hb.r * 0.45, hb.r * mouth, hb.r * 0.55, 0, Math.PI, 0); g.fill();
+  if (hot) {
+    g.strokeStyle = '#c95cff'; g.lineWidth = 7;
+    g.setLineDash([16, 12]); g.lineDashOffset = -(now * 0.03) % 28;
+    g.beginPath(); g.ellipse(0, hb.r * 0.45, hb.r * mouth + 14, hb.r * 0.62, 0, Math.PI, 0); g.stroke();
+    g.setLineDash([]);
+  }
+  /* angry eyes glowing in the dark */
+  g.fillStyle = hot ? '#ff5c8a' : '#8a6aa0';
+  g.beginPath(); g.arc(-22, hb.r * 0.28, 7, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.arc(22, hb.r * 0.28, 7, 0, Math.PI * 2); g.fill();
+  /* horde banner */
+  g.strokeStyle = '#332540'; g.lineWidth = 7;
+  g.beginPath(); g.moveTo(hb.r * 1.1, hb.r * 0.7); g.lineTo(hb.r * 1.1, -hb.r * 1.1); g.stroke();
+  g.fillStyle = '#5b2a63'; g.strokeStyle = '#332540'; g.lineWidth = 4;
+  g.beginPath(); g.moveTo(hb.r * 1.1, -hb.r * 1.1); g.lineTo(hb.r * 1.75, -hb.r * 0.92); g.lineTo(hb.r * 1.1, -hb.r * 0.74);
+  g.closePath(); g.fill(); g.stroke();
+  face(g, hb.r * 1.32, -hb.r * 0.94, 0.9, 'angry');
+  g.restore();
 
   for (const pr of world.props) {
     g.font = `${pr.s}px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
@@ -908,23 +983,49 @@ function drawTerrain(g, world, activePaths, now) {
   }
 }
 
-function drawCastleAt(g, castleHp, castleMax, hitRecently, now) {
-  g.save();
-  g.fillStyle = '#e7c9a1';
-  g.beginPath(); g.arc(0, 0, CASTLE.r + 26, 0, Math.PI * 2); g.fill();
+/* the Great Gingerbread Castle — the team's corner base */
+function drawCastleAt(g, x, y, castleHp, castleMax, hitRecently, now) {
+  g.save(); g.translate(x, y);
+  g.fillStyle = '#e7c9a1';                                 /* courtyard */
+  g.beginPath(); g.arc(0, 0, CASTLE.r + 30, 0, Math.PI * 2); g.fill();
   g.strokeStyle = '#b98d5f'; g.lineWidth = 10;
-  g.beginPath(); g.arc(0, 0, CASTLE.r + 26, 0, Math.PI * 2); g.stroke();
+  g.beginPath(); g.arc(0, 0, CASTLE.r + 30, 0, Math.PI * 2); g.stroke();
   if (hitRecently && Math.floor(now / 120) % 2 === 0) {
-    g.strokeStyle = '#ff4d4d'; g.lineWidth = 6;
-    g.beginPath(); g.arc(0, 0, CASTLE.r + 40, 0, Math.PI * 2); g.stroke();
+    g.strokeStyle = '#ff4d4d'; g.lineWidth = 8;
+    g.beginPath(); g.arc(0, 0, CASTLE.r + 46, 0, Math.PI * 2); g.stroke();
   }
-  g.font = '120px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.fillText('🏰', 0, -6);
+  g.strokeStyle = '#7a4d21'; g.lineWidth = 5;
+  /* side towers */
+  for (const tx of [-62, 62]) {
+    g.fillStyle = '#f3dcae';
+    rr(g, tx - 22, -34, 44, 88, 10); g.fill(); g.stroke();
+    g.fillStyle = '#ff6f91';                               /* frosting cone roofs */
+    g.beginPath(); g.moveTo(tx - 28, -32); g.lineTo(tx, -86); g.lineTo(tx + 28, -32); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#fff';
+    g.beginPath(); g.arc(tx, -12, 8, 0, Math.PI * 2); g.fill(); g.stroke();
+  }
+  /* main keep */
+  g.fillStyle = '#f7e6c4';
+  rr(g, -46, -18, 92, 76, 12); g.fill(); g.stroke();
+  g.fillStyle = '#ff6f91';
+  g.beginPath(); g.moveTo(-54, -16); g.lineTo(0, -66); g.lineTo(54, -16); g.closePath(); g.fill(); g.stroke();
+  g.fillStyle = '#fff';                                    /* icing scallops */
+  for (let i = -1; i <= 1; i++) { g.beginPath(); g.arc(i * 26, -16, 12, 0, Math.PI); g.fill(); }
+  g.fillStyle = '#8a5a2b';                                 /* big cookie door */
+  rr(g, -14, 22, 28, 36, 12); g.fill(); g.stroke();
+  g.fillStyle = '#ffd93d';
+  g.beginPath(); g.arc(6, 42, 3.5, 0, Math.PI * 2); g.fill();
+  /* flag */
+  g.strokeStyle = '#7a4d21'; g.lineWidth = 4;
+  g.beginPath(); g.moveTo(0, -66); g.lineTo(0, -96); g.stroke();
+  g.fillStyle = '#ffd93d';
+  g.beginPath(); g.moveTo(0, -96); g.lineTo(26, -88); g.lineTo(0, -80); g.closePath(); g.fill(); g.stroke();
+  /* castle health */
   const frac = clamp(castleHp / castleMax, 0, 1);
-  g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(-80, 96, 160, 16);
+  g.fillStyle = 'rgba(0,0,0,.35)'; rr(g, -80, 104, 160, 16, 8); g.fill();
   g.fillStyle = frac > 0.5 ? '#6bcf7f' : frac > 0.25 ? '#ffd93d' : '#ff4d6d';
-  g.fillRect(-80, 96, 160 * frac, 16);
-  g.strokeStyle = '#fff'; g.lineWidth = 3; g.strokeRect(-80, 96, 160, 16);
+  if (frac > 0.02) { rr(g, -80, 104, 160 * frac, 16, 8); g.fill(); }
+  g.strokeStyle = '#fff'; g.lineWidth = 3; rr(g, -80, 104, 160, 16, 8); g.stroke();
   g.restore();
 }
 
@@ -934,98 +1035,362 @@ function hpBar(g, x, y, w, frac, col) {
   g.fillRect(x - w / 2, y, w * clamp(frac, 0, 1), 6);
 }
 
+/* keep sprites readable when the camera is zoomed way out */
+const upscale = (z) => Math.max(1, 0.5 / z);
+
+/* ---------------- buildings: little houses in the owner's color ---------------- */
+
 function drawBld(g, row, seats, z, now) {
   const [, seat, tIdx, x, y, lvl, hpPct, boosted] = row;
-  const type = BTYPE[tIdx], def = BLD[type];
+  const type = BTYPE[tIdx];
   const s = seats[seat];
-  const em = Math.max(def.r * 1.7, 20 / z);
-  g.save(); g.translate(x, y);
-  g.strokeStyle = s ? s.color : '#ccc'; g.lineWidth = Math.max(4, 5 / z);
-  g.fillStyle = 'rgba(255,255,255,.55)';
-  g.beginPath(); g.arc(0, 0, def.r + 8, 0, Math.PI * 2); g.fill(); g.stroke();
-  if (boosted) {
-    g.strokeStyle = '#ffd93d'; g.setLineDash([8, 6]); g.lineDashOffset = -(now * 0.05) % 14;
-    g.beginPath(); g.arc(0, 0, def.r + 16, 0, Math.PI * 2); g.stroke(); g.setLineDash([]);
+  const color = s ? s.color : '#cccccc';
+  const dark = shade(color, 0.7);
+  const k = upscale(z);
+  g.save(); g.translate(x, y); g.scale(k, k);
+  g.fillStyle = 'rgba(40,20,50,.18)';                      /* ground shadow */
+  g.beginPath(); g.ellipse(0, 26, 34, 11, 0, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = dark; g.lineWidth = 3;
+
+  if (type === 'turret') {
+    /* tapered candy tower with an owner-colored gumball dome */
+    g.fillStyle = '#fff0dd';
+    g.beginPath(); g.moveTo(-20, 24); g.lineTo(-14, -10); g.lineTo(14, -10); g.lineTo(20, 24); g.closePath();
+    g.fill(); g.stroke();
+    g.lineWidth = 2;
+    for (const lx of [-8, 0, 8]) { g.beginPath(); g.moveTo(lx * 1.35, 22); g.lineTo(lx, -8); g.stroke(); }
+    g.lineWidth = 3;
+    g.fillStyle = color;
+    g.beginPath(); g.arc(0, -18, 15, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.fillStyle = 'rgba(255,255,255,.5)';
+    g.beginPath(); g.arc(-5, -23, 5, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#3a2038';
+    g.beginPath(); g.arc(12, -18, 4.5, 0, Math.PI * 2); g.fill(); g.stroke();   /* gumball barrel */
+  } else if (type === 'launcher') {
+    /* rocket battery: cream bunker, two owner-colored rockets aimed at the sky */
+    g.fillStyle = '#fff0dd';
+    rr(g, -24, 2, 48, 22, 8); g.fill(); g.stroke();
+    g.fillStyle = color;
+    rr(g, -24, 16, 48, 8, 4); g.fill(); g.stroke();
+    for (const [rx, tilt] of [[-10, -0.22], [10, 0.22]]) {
+      g.save(); g.translate(rx, 2); g.rotate(tilt);
+      g.fillStyle = '#fdfdfb';
+      rr(g, -6, -22, 12, 26, 5); g.fill(); g.stroke();
+      g.fillStyle = color;
+      g.beginPath(); g.moveTo(-7, -20); g.lineTo(0, -34); g.lineTo(7, -20); g.closePath(); g.fill(); g.stroke();
+      g.fillStyle = '#ff9f4a';
+      g.beginPath(); g.moveTo(-4, 4); g.lineTo(0, 11); g.lineTo(4, 4); g.closePath(); g.fill();
+      g.restore();
+    }
+  } else if (type === 'mortar') {
+    /* marshmallow pot with a big lobber tube */
+    g.fillStyle = '#fff0dd';
+    g.beginPath(); g.arc(0, 8, 22, Math.PI, 0); g.lineTo(22, 20); g.quadraticCurveTo(0, 27, -22, 20);
+    g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = color;
+    rr(g, -24, 2, 48, 9, 4); g.fill(); g.stroke();
+    g.save(); g.rotate(-0.7);
+    g.fillStyle = '#8b8f99';
+    rr(g, -8, -34, 16, 30, 6); g.fill(); g.stroke();
+    g.fillStyle = '#3a2038';
+    g.beginPath(); g.ellipse(0, -33, 8, 4, 0, 0, Math.PI * 2); g.fill();
+    g.restore();
+    g.fillStyle = '#fdfdfb';                               /* marshmallow ammo */
+    g.beginPath(); g.arc(13, 0, 5, 0, Math.PI * 2); g.fill(); g.stroke();
+  } else if (type === 'syrup') {
+    /* honey jar with an owner-colored lid, mid-drip */
+    g.fillStyle = '#e8a33d';
+    g.beginPath(); g.moveTo(-16, -8); g.quadraticCurveTo(-22, 10, -14, 22);
+    g.lineTo(14, 22); g.quadraticCurveTo(22, 10, 16, -8); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#f7c96b';
+    g.beginPath(); g.ellipse(-5, 4, 6, 9, 0.3, 0, Math.PI * 2); g.fill();
+    g.fillStyle = color;
+    rr(g, -18, -16, 36, 10, 5); g.fill(); g.stroke();
+    const drip = (now * 0.003) % 1;
+    g.fillStyle = '#e8a33d';
+    g.beginPath(); g.arc(19, -2 + drip * 22, 4 * (1 - drip * 0.4), 0, Math.PI * 2); g.fill();
+  } else if (type === 'barracks') {
+    /* gummy training tent in the owner's color, flag flying */
+    g.fillStyle = color;
+    g.beginPath(); g.moveTo(-30, 22); g.lineTo(0, -26); g.lineTo(30, 22); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = shade(color, 0.85);
+    g.beginPath(); g.moveTo(-30, 22); g.lineTo(-8, 22); g.lineTo(0, -26); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#fff8f0';                               /* door flap */
+    g.beginPath(); g.moveTo(-9, 22); g.lineTo(0, 4); g.lineTo(9, 22); g.closePath(); g.fill(); g.stroke();
+    g.lineWidth = 2.5;
+    g.beginPath(); g.moveTo(0, -26); g.lineTo(0, -40); g.stroke();
+    g.fillStyle = color;
+    g.beginPath(); g.moveTo(0, -40); g.lineTo(15, -35); g.lineTo(0, -30); g.closePath(); g.fill(); g.stroke();
+  } else if (type === 'wall') {
+    /* chewy candy-brick decoy */
+    g.fillStyle = '#ff9db8';
+    rr(g, -26, -18, 52, 42, 7); g.fill(); g.stroke();
+    g.strokeStyle = shade(color, 0.8); g.lineWidth = 2.2;
+    for (const by of [-4, 10]) { g.beginPath(); g.moveTo(-26, by); g.lineTo(26, by); g.stroke(); }
+    for (const [bx, by] of [[-9, -18], [9, -4], [-9, 10]]) {
+      g.beginPath(); g.moveTo(bx, by); g.lineTo(bx, by + 14); g.stroke();
+    }
+    g.strokeStyle = dark; g.lineWidth = 3;
+    face(g, 0, -2, 1.1, 'smile');                          /* it WANTS to be chewed */
   }
-  g.font = `${em}px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.fillText(def.emoji, 0, 0);
-  if (hpPct < 100) hpBar(g, 0, def.r + 12, def.r * 2, hpPct / 100);
-  if (lvl > 1) {                                          // level pips
-    g.fillStyle = '#ffd93d';
+
+  if (boosted) {
+    g.strokeStyle = '#ffd93d'; g.lineWidth = 3.5; g.setLineDash([8, 6]); g.lineDashOffset = -(now * 0.05) % 14;
+    g.beginPath(); g.arc(0, 0, 40, 0, Math.PI * 2); g.stroke(); g.setLineDash([]);
+  }
+  if (hpPct < 100) hpBar(g, 0, 30, 52, hpPct / 100);
+  if (lvl > 1) {
+    g.fillStyle = '#ffd93d'; g.strokeStyle = '#b98a13'; g.lineWidth = 1.5;
     for (let i = 0; i < lvl; i++) {
-      g.beginPath(); g.arc(-((lvl - 1) * 5) + i * 10, -def.r - 12, 3.6, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.arc(-((lvl - 1) * 5.5) + i * 11, -42, 4, 0, Math.PI * 2); g.fill(); g.stroke();
     }
   }
   g.restore();
 }
 
+/* ---------------- enemies: the Sour Horde, faces and all ---------------- */
+
 function drawEnemy(g, row, z, now) {
   const [id, tIdx, x, y, hpPct, stun, slow] = row;
   const type = ETYPE[tIdx], def = ETYPES[type];
-  const r = def.boss ? 42 : 16;
-  const em = Math.max(r * 1.9, 18 / z);
-  g.save(); g.translate(x, y);
-  const bob = def.air ? Math.sin(now * 0.008 + id) * 5 : 0;
-  if (def.air) {                                          // little shadow under fliers
-    g.fillStyle = 'rgba(0,0,0,.18)';
-    g.beginPath(); g.ellipse(0, 12, em * 0.35, em * 0.14, 0, 0, Math.PI * 2); g.fill();
+  const k = upscale(z) * (def.boss ? 2.1 : 1);
+  const w = now * 0.01 + id;
+  g.save(); g.translate(x, y); g.scale(k, k);
+  const ink = '#332540';
+  g.strokeStyle = ink; g.lineWidth = 2.6;
+  if (!def.air) {
+    g.fillStyle = 'rgba(40,20,50,.18)';
+    g.beginPath(); g.ellipse(0, 13, 13, 5, 0, 0, Math.PI * 2); g.fill();
   }
-  if (slow) { g.fillStyle = 'rgba(80,160,255,.3)'; g.beginPath(); g.arc(0, bob, em * 0.62, 0, Math.PI * 2); g.fill(); }
-  g.font = `${em}px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.fillText(def.emoji, 0, bob - (def.air ? 10 : 0));
-  if (stun) { g.font = `${em * 0.55}px sans-serif`; g.fillText('💫', 0, bob - em * 0.75); }
-  if (hpPct < 100) hpBar(g, 0, r + 6, Math.max(r * 2, 26 / z), hpPct / 100, '#c95cff');
+  if (slow) { g.fillStyle = 'rgba(80,160,255,.3)'; g.beginPath(); g.arc(0, 0, 20, 0, Math.PI * 2); g.fill(); }
+
+  if (type === 'chomper') {
+    /* cookie goblin — round, bitten, hungry */
+    g.rotate(Math.sin(w * 2) * 0.08);
+    g.fillStyle = '#a5713d';
+    g.beginPath(); g.arc(0, 0, 13, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.fillStyle = '#8a5a2b';
+    for (const [cx, cy] of [[-7, -6], [6, -8], [8, 5], [-4, 8]]) {
+      g.beginPath(); g.arc(cx, cy, 2.2, 0, Math.PI * 2); g.fill();
+    }
+    g.fillStyle = '#9ed98a';                               /* bite taken out */
+    g.beginPath(); g.arc(11, -8, 5, 0, Math.PI * 2); g.fill();
+    face(g, 0, -1, 1, 'angry');
+    g.fillStyle = '#fff';                                  /* chomping teeth */
+    const jaw = Math.abs(Math.sin(w * 4)) * 3;
+    g.beginPath(); g.moveTo(-4, 7 + jaw); g.lineTo(-1, 4 + jaw); g.lineTo(2, 7 + jaw); g.lineTo(5, 4 + jaw); g.stroke();
+  } else if (type === 'sprinter') {
+    /* lemon zoomer — leaning into the run, little legs blurring */
+    g.rotate(0.18);
+    g.fillStyle = '#efd94f';
+    g.beginPath(); g.ellipse(0, -2, 12, 9, 0, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.fillStyle = '#f7ea8f';
+    g.beginPath(); g.ellipse(-3, -5, 4, 2.5, 0.4, 0, Math.PI * 2); g.fill();
+    face(g, 1, -3, 0.9, 'angry');
+    g.strokeStyle = ink; g.lineWidth = 2.4; g.lineCap = 'round';
+    const st = Math.sin(w * 9) * 5;
+    g.beginPath(); g.moveTo(-5, 6); g.lineTo(-8 + st, 13); g.stroke();
+    g.beginPath(); g.moveTo(4, 6); g.lineTo(7 - st, 13); g.stroke();
+    g.strokeStyle = 'rgba(51,37,64,.35)';                  /* speed lines */
+    g.beginPath(); g.moveTo(-14, -6); g.lineTo(-22, -6); g.stroke();
+    g.beginPath(); g.moveTo(-13, 1); g.lineTo(-20, 1); g.stroke();
+  } else if (type === 'wasp') {
+    /* wafer wasp — waffle body, buzzing wings, ground shadow */
+    g.fillStyle = 'rgba(40,20,50,.15)';
+    g.beginPath(); g.ellipse(0, 16, 10, 4, 0, 0, Math.PI * 2); g.fill();
+    g.translate(0, -14 + Math.sin(w * 3) * 3);
+    const flap = Math.sin(w * 12) * 0.6;
+    g.fillStyle = 'rgba(255,255,255,.8)'; g.lineWidth = 1.8;
+    g.beginPath(); g.ellipse(-10, -5, 10, 4.5, -0.5 - flap, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.beginPath(); g.ellipse(10, -5, 10, 4.5, 0.5 + flap, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.lineWidth = 2.6;
+    g.fillStyle = '#d9a441';
+    g.beginPath(); g.ellipse(0, 0, 9, 12, 0, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.strokeStyle = '#8a5a2b'; g.lineWidth = 1.6;          /* waffle grid */
+    for (const gy of [-4, 1, 6]) { g.beginPath(); g.moveTo(-7, gy); g.lineTo(7, gy); g.stroke(); }
+    g.beginPath(); g.moveTo(0, -9); g.lineTo(0, 10); g.stroke();
+    g.strokeStyle = ink;
+    face(g, 0, -4, 0.85, 'angry');
+    g.beginPath(); g.moveTo(0, 12); g.lineTo(0, 16); g.stroke();  /* stinger */
+  } else if (type === 'sapper') {
+    /* jelly sapper — segmented worm with wrecking teeth, building-obsessed */
+    const sq = Math.sin(w * 5) * 0.12;
+    g.fillStyle = '#9b59d0';
+    g.beginPath(); g.ellipse(-11, 4, 7 * (1 + sq), 6, 0, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.beginPath(); g.ellipse(-2, 1, 8 * (1 - sq), 7, 0, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.fillStyle = '#b57ae0';
+    g.beginPath(); g.arc(9, -2, 9, 0, Math.PI * 2); g.fill(); g.stroke();
+    face(g, 9, -4, 0.9, 'angry');
+    g.fillStyle = '#fff';                                  /* chompy teeth */
+    g.beginPath(); g.moveTo(3, 3); g.lineTo(6, 7); g.lineTo(9, 3); g.lineTo(12, 7); g.lineTo(15, 3);
+    g.closePath(); g.fill(); g.stroke();
+  } else if (type === 'golem') {
+    /* gumdrop golem — a walking boulder */
+    g.rotate(Math.sin(w) * 0.04);
+    g.fillStyle = '#7d8a99';
+    g.beginPath(); g.arc(0, -2, 17, Math.PI, 0);
+    g.lineTo(17, 10); g.quadraticCurveTo(0, 16, -17, 10); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#5b6672';                               /* cracked slabs */
+    rr(g, -12, -8, 9, 7, 2); g.fill();
+    rr(g, 4, 0, 8, 6, 2); g.fill();
+    g.fillStyle = '#98a5b3';                               /* stone fists */
+    g.beginPath(); g.arc(-19, 6 + Math.sin(w * 2) * 3, 6, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.beginPath(); g.arc(19, 6 - Math.sin(w * 2) * 3, 6, 0, Math.PI * 2); g.fill(); g.stroke();
+    face(g, 0, -4, 1.15, 'angry');
+  } else {
+    /* the Rock Candy Colossus — crystal crown, very cross */
+    g.rotate(Math.sin(w * 0.8) * 0.03);
+    g.fillStyle = '#c0455c';
+    g.beginPath(); g.arc(0, -2, 20, Math.PI, 0);
+    g.lineTo(20, 12); g.quadraticCurveTo(0, 19, -20, 12); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#e06a80';                               /* crystal crown */
+    for (const [cx, ch] of [[-12, 12], [0, 18], [12, 12]]) {
+      g.beginPath(); g.moveTo(cx - 5, -14); g.lineTo(cx, -14 - ch); g.lineTo(cx + 5, -14); g.closePath();
+      g.fill(); g.stroke();
+    }
+    g.fillStyle = '#a03449';
+    rr(g, -14, 2, 10, 8, 2); g.fill();
+    g.fillStyle = '#e06a80';
+    g.beginPath(); g.arc(-23, 8 + Math.sin(w * 1.5) * 3, 7, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.beginPath(); g.arc(23, 8 - Math.sin(w * 1.5) * 3, 7, 0, Math.PI * 2); g.fill(); g.stroke();
+    face(g, 0, -5, 1.5, 'angry');
+  }
+
+  if (stun) { g.font = '13px sans-serif'; g.textAlign = 'center'; g.fillText('💫', 0, -22); }
+  if (hpPct < 100) hpBar(g, 0, def.boss ? 24 : 17, def.boss ? 44 : 28, hpPct / 100, '#c95cff');
   g.restore();
 }
+
+/* ---------------- heroes: little people with faces and class gear ---------------- */
 
 function drawHeroRow(g, row, seats, z, now, isMe) {
   const [seat, heroIdx, x, y, hp, maxhp, deadT, , , , , , , armored] = row;
   if (heroIdx < 0) return;
-  const hd = HEROES[heroIdx];
+  const heroId = HERO_IDX[heroIdx];
   const s = seats[seat];
-  const em = Math.max(hd.r * 2.1, 26 / z);
+  const color = s ? s.color : '#cccccc';
+  const dark = shade(color, 0.7);
+  const k = upscale(z);
+  const w = now * 0.012 + seat * 2;
   g.save(); g.translate(x, y);
-  if (deadT > 0) {
-    g.globalAlpha = 0.55;
-    g.font = `${em}px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText('😵', 0, 0);
+
+  /* name floats above, sized for the current zoom */
+  if (s && !deadT) {
+    g.fillStyle = color; g.font = `bold ${Math.max(14, 15 / z)}px Fredoka, sans-serif`;
+    g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+    g.strokeStyle = 'rgba(0,0,0,.55)'; g.lineWidth = Math.max(3, 3.5 / z);
+    g.strokeText(s.name, 0, -34 * k);
+    g.fillText(s.name, 0, -34 * k);
+  }
+
+  g.scale(k, k);
+  g.strokeStyle = dark; g.lineWidth = 2.6;
+
+  if (deadT > 0) {                                         /* knocked out */
+    g.globalAlpha = 0.65;
+    g.fillStyle = '#cfd6dd';
+    g.beginPath(); g.arc(0, 0, 12, Math.PI, 0); g.lineTo(12, 8); g.quadraticCurveTo(0, 13, -12, 8);
+    g.closePath(); g.fill(); g.stroke();
+    face(g, 0, -1, 1, 'ko');
     g.globalAlpha = 1;
-    g.fillStyle = '#fff'; g.font = `bold ${Math.max(15, 15 / z)}px Fredoka, sans-serif`;
-    g.fillText(`${Math.ceil(deadT / 10)}s`, 0, -em * 0.8);
+    g.fillStyle = '#fff'; g.font = 'bold 13px Fredoka, sans-serif'; g.textAlign = 'center';
+    g.strokeStyle = 'rgba(0,0,0,.55)'; g.lineWidth = 3;
+    g.strokeText(`${Math.ceil(deadT / 10)}s`, 0, -20);
+    g.fillText(`${Math.ceil(deadT / 10)}s`, 0, -20);
     g.restore(); return;
   }
-  g.strokeStyle = s ? s.color : '#fff'; g.lineWidth = Math.max(4, 5 / z);
-  g.fillStyle = 'rgba(255,255,255,.7)';
-  g.beginPath(); g.arc(0, 2, em * 0.6, 0, Math.PI * 2); g.fill(); g.stroke();
-  if (isMe) {
-    g.strokeStyle = '#fff'; g.setLineDash([6, 5]); g.lineDashOffset = -(now * 0.04) % 11;
-    g.beginPath(); g.arc(0, 2, em * 0.74, 0, Math.PI * 2); g.stroke(); g.setLineDash([]);
+
+  if (isMe) {                                              /* "this one's you" ring */
+    g.strokeStyle = '#fff'; g.lineWidth = 3; g.setLineDash([7, 6]);
+    g.lineDashOffset = -(now * 0.04) % 13;
+    g.beginPath(); g.arc(0, 2, 22, 0, Math.PI * 2); g.stroke();
+    g.setLineDash([]); g.strokeStyle = dark; g.lineWidth = 2.6;
   }
+  g.fillStyle = 'rgba(40,20,50,.18)';
+  g.beginPath(); g.ellipse(0, 13, 12, 4.5, 0, 0, Math.PI * 2); g.fill();
+  g.rotate(Math.sin(w * 4) * 0.06);                        /* walking waddle */
+
+  /* body: color dome + skirt, like the Candy Kingdoms guards */
+  g.fillStyle = color;
+  g.beginPath(); g.arc(0, 2, 12, Math.PI, 0); g.lineTo(12, 8); g.quadraticCurveTo(0, 13, -12, 8);
+  g.closePath(); g.fill(); g.stroke();
+  /* head */
+  g.fillStyle = '#ffe1bd';
+  g.beginPath(); g.arc(0, -8, 8.5, 0, Math.PI * 2); g.fill(); g.stroke();
+  face(g, 0, -8, 1, 'smile');
+
+  if (heroId === 'knight') {
+    g.fillStyle = '#cfd6dd';                               /* helmet + plume */
+    g.beginPath(); g.arc(0, -10, 9, Math.PI, 0); g.lineTo(9, -8); g.lineTo(-9, -8); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#ff4d6d';
+    g.beginPath(); g.arc(0, -19, 3, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.fillStyle = color;                                   /* round shield */
+    g.beginPath(); g.arc(-14, 2, 6.5, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.fillStyle = '#ffd93d';
+    g.beginPath(); g.arc(-14, 2, 2.5, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#8b8f99'; g.lineWidth = 3; g.lineCap = 'round';   /* sword */
+    g.beginPath(); g.moveTo(13, 4); g.lineTo(19, -8); g.stroke();
+  } else if (heroId === 'ranger') {
+    g.fillStyle = color;                                   /* pointy hood + feather */
+    g.beginPath(); g.moveTo(-9, -12); g.lineTo(0, -26); g.lineTo(9, -12); g.closePath(); g.fill(); g.stroke();
+    g.strokeStyle = '#6bcf7f'; g.lineWidth = 2.4;
+    g.beginPath(); g.moveTo(4, -20); g.quadraticCurveTo(11, -26, 13, -20); g.stroke();
+    g.strokeStyle = '#8a5a2b'; g.lineWidth = 2.4;          /* bow */
+    g.beginPath(); g.arc(14, -2, 9, -Math.PI * 0.45, Math.PI * 0.45); g.stroke();
+    g.strokeStyle = '#fff'; g.lineWidth = 1.2;
+    g.beginPath();
+    g.moveTo(14 + Math.cos(-Math.PI * 0.45) * 9, -2 + Math.sin(-Math.PI * 0.45) * 9);
+    g.lineTo(14 + Math.cos(Math.PI * 0.45) * 9, -2 + Math.sin(Math.PI * 0.45) * 9);
+    g.stroke();
+  } else if (heroId === 'mage') {
+    g.fillStyle = color;                                   /* wizard hat */
+    g.beginPath(); g.moveTo(-11, -12); g.lineTo(2, -30); g.lineTo(11, -12); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#ffd93d'; g.font = '8px sans-serif'; g.textAlign = 'center';
+    g.fillText('★', 0, -17);
+    g.strokeStyle = '#8a5a2b'; g.lineWidth = 2.6;          /* staff with an orb */
+    g.beginPath(); g.moveTo(13, 8); g.lineTo(15, -14); g.stroke();
+    g.fillStyle = '#7fd8ff';
+    g.beginPath(); g.arc(15, -17, 4, 0, Math.PI * 2); g.fill(); g.stroke();
+  } else if (heroId === 'builder') {
+    g.fillStyle = '#ffd93d';                               /* hard hat */
+    g.beginPath(); g.arc(0, -10, 9, Math.PI, 0); g.lineTo(11, -8); g.lineTo(-11, -8); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#f2b41f';
+    rr(g, -3, -20, 6, 5, 2); g.fill(); g.stroke();
+    g.strokeStyle = '#8b8f99'; g.lineWidth = 3; g.lineCap = 'round';   /* wrench */
+    g.beginPath(); g.moveTo(12, 6); g.lineTo(18, -4); g.stroke();
+    g.strokeStyle = '#8b8f99'; g.lineWidth = 2.2;
+    g.beginPath(); g.arc(19, -6, 3.5, Math.PI * 0.8, Math.PI * 2.1); g.stroke();
+  }
+
   if (armored) {
-    g.strokeStyle = '#7fd8ff'; g.lineWidth = Math.max(3, 4 / z);
-    g.beginPath(); g.arc(0, 2, em * 0.68, 0, Math.PI * 2); g.stroke();
+    g.strokeStyle = '#7fd8ff'; g.lineWidth = 3;
+    g.beginPath(); g.arc(0, 0, 18, 0, Math.PI * 2); g.stroke();
   }
-  g.font = `${em}px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.fillText(hd.emoji, 0, 0);
-  hpBar(g, 0, em * 0.72, em * 1.1, hp / maxhp);
-  if (s) {
-    g.fillStyle = s.color; g.font = `bold ${Math.max(13, 14 / z)}px Fredoka, sans-serif`;
-    g.strokeStyle = 'rgba(0,0,0,.5)'; g.lineWidth = 3;
-    g.strokeText(s.name, 0, -em * 0.78);
-    g.fillText(s.name, 0, -em * 0.78);
-  }
+  hpBar(g, 0, 17, 26, hp / maxhp);
   g.restore();
 }
 
+/* ---------------- gummy fighters: tiny bears in the owner's color ---------------- */
+
 function drawGummy(g, row, seats, z) {
-  const [, seat, x, y, hpPct] = row;
+  const [id, seat, x, y, hpPct] = row;
   const s = seats[seat];
-  const em = Math.max(GUMMY.r * 2, 14 / z);
-  g.save(); g.translate(x, y);
-  g.font = `${em}px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.fillText('🧸', 0, 0);
-  if (s) { g.strokeStyle = s.color; g.lineWidth = Math.max(2, 2.5 / z); g.beginPath(); g.arc(0, 2, em * 0.55, 0, Math.PI * 2); g.stroke(); }
-  if (hpPct < 100) hpBar(g, 0, em * 0.65, em, hpPct / 100);
+  const color = s ? s.color : '#cccccc';
+  const k = upscale(z);
+  g.save(); g.translate(x, y); g.scale(k, k);
+  g.strokeStyle = shade(color, 0.7); g.lineWidth = 2;
+  g.fillStyle = 'rgba(40,20,50,.15)';
+  g.beginPath(); g.ellipse(0, 9, 8, 3, 0, 0, Math.PI * 2); g.fill();
+  g.fillStyle = color; g.globalAlpha = 0.92;               /* translucent like real gummies */
+  g.beginPath(); g.arc(-5.5, -7, 3, 0, Math.PI * 2); g.fill(); g.stroke();   /* ears */
+  g.beginPath(); g.arc(5.5, -7, 3, 0, Math.PI * 2); g.fill(); g.stroke();
+  g.beginPath(); g.arc(0, 0, 8.5, Math.PI, 0); g.lineTo(8.5, 5); g.quadraticCurveTo(0, 9.5, -8.5, 5);
+  g.closePath(); g.fill(); g.stroke();
+  g.globalAlpha = 1;
+  g.fillStyle = 'rgba(255,255,255,.45)';
+  g.beginPath(); g.arc(-3, -3, 2.5, 0, Math.PI * 2); g.fill();
+  face(g, 0, -1, 0.75, 'smile');
+  if (hpPct < 100) hpBar(g, 0, 12, 18, hpPct / 100);
   g.restore();
 }
 
@@ -1164,7 +1529,7 @@ function drawFields(g, fields, now) {
 function drawScene(g, world, snap, seats, now, z, mySeat) {
   drawTerrain(g, world, snap.ap, now);
   drawFields(g, snap.fields || [], now);
-  drawCastleAt(g, snap.c[0], snap.c[1], snap.chit, now);
+  drawCastleAt(g, world.castle.x, world.castle.y, snap.c[0], snap.c[1], snap.chit, now);
   for (const b of snap.b) drawBld(g, b, seats, z, now);
   for (const a of snap.a) drawGummy(g, a, seats, z);
   const ground = snap.e.filter((e) => !ETYPES[ETYPE[e[1]]].air);
@@ -1201,7 +1566,7 @@ function lerpView(prev, cur, alpha) {
   return { ...s, pl, e, a: al };
 }
 
-const fitZoom = (w, h) => Math.min(w, h) / (WORLD_R * 2.12);
+const fitZoom = (w, h) => Math.min(w, h) / (WORLD_HALF * 2.12);
 
 /* ================= HOST (big screen) ================= */
 
@@ -1963,10 +2328,17 @@ function createController(ctx) {
         if (def.minRange) { g.beginPath(); g.arc(0, 0, def.minRange, 0, Math.PI * 2); g.stroke(); }
       }
       g.strokeStyle = ok ? '#6bcf7f' : '#ff4d6d'; g.lineWidth = 6 / c.z; g.setLineDash([]);
-      g.beginPath(); g.arc(0, 0, def.r + 10, 0, Math.PI * 2); g.stroke();
-      g.font = `${def.r * 1.8}px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
-      g.fillText(ok ? def.emoji : '🚫', 0, 0);
+      g.beginPath(); g.arc(0, 0, def.r + 14, 0, Math.PI * 2); g.stroke();
       g.restore();
+      g.globalAlpha = 0.8;
+      drawBld(g, [0, mySeat, BTYPE.indexOf(placing.type), placing.x, placing.y, 1, 100, 0], seats, c.z, now);
+      g.globalAlpha = 1;
+      if (!ok) {
+        g.save(); g.translate(placing.x, placing.y);
+        g.font = `${Math.max(30, 34 / c.z)}px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText('🚫', 0, 0);
+        g.restore();
+      }
       $q('.gg-place-ok').disabled = !ok;
       const hint = ok ? '🟢 Good spot — hit Place!' : '🔴 Too close to a trail or building — tap elsewhere';
       const hintEl = $q('.gg-place-hint');
@@ -2001,5 +2373,5 @@ export default {
 export const __sim = {
   buildWorld, canPlace, makeSim, addPlayer, pickHero, stepSim, build,
   upgradeBld, upgradeHero, sellBld, castAbility, snapshot, buildWave,
-  HEROES, BLD, ETYPES, CASTLE, LAST_WAVE, WORLD_R,
+  HEROES, BLD, ETYPES, CASTLE, HORDE, LAST_WAVE, WORLD_HALF,
 };
