@@ -225,7 +225,13 @@
   background: rgba(255, 255, 255, 0.12); color: #fff;
   padding: 0 10px; font-family: inherit; overflow: hidden;
 }
-.gg-ab:active { transform: scale(0.96); }
+.gg-ab:active, .gg-ab-hit { transform: scale(0.96); }
+/* powers fire on touchstart (so they work with the joystick held), and
+   preventDefault there can swallow :active — so we flash the button ourselves */
+.gg-ab-hit {
+  border-color: #ffd93d;
+  background: rgba(255, 217, 61, 0.32);
+}
 .gg-ab::after {           /* cooldown shade sweeps down */
   content: ''; position: absolute; inset: 0;
   height: var(--cd, 0%);

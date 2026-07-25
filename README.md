@@ -167,14 +167,17 @@ tick: heroes stop dead against towers and buildings, and creep packs shove
 rather than hard-wall.
 
 Phones are full controllers: joystick, three hero powers, tap-to-attack on
-the live map, and the shop overlay for gear, building, and upgrades.
+the live map, and the shop overlay for gear, building, and upgrades. Powers
+fire on touch-down and carry the joystick's live direction with them, so you
+can Shield Charge mid-run with the stick still held — and a target you tapped
+will steer a charge or a leap if the stick is idle.
 
 ### Testing
 
 Two headless suites, no browser needed:
 
 ```bash
-node test-gg.mjs      # 146 rules checks: waves, economy, walls, fountain, targeting
+node test-gg.mjs      # 152 rules checks: waves, economy, walls, fountain, targeting
 node stress-gg.mjs    # walls thrown across live lanes, long matches, tick budget
 ```
 

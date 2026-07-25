@@ -218,3 +218,53 @@ away from towers too easily, 0.72 costs roughly two full zaps per escape.
 
 Test count is now **146**, adding coverage for the escape hatch arming and
 disarming, the enemy-wall climb rules, and the tower-escape maths.
+
+---
+
+# Follow-up: powers while moving
+
+## What was wrong
+
+Two separate things, and the first one was the real culprit.
+
+**The buttons listened for `click`.** A `click` is only synthesised after a
+clean press-and-release on the same element, and mobile browsers routinely
+skip it when another finger is already down — especially when that finger is
+driving a joystick that calls `preventDefault` on its own `touchmove` stream.
+Which is precisely the Shield Charge situation: thumb on the stick, thumb on
+the power. The press was being swallowed before the game ever saw it.
+
+Powers now fire on **`touchstart`**, so they go off the instant your thumb
+lands, with the stick still held. As a bonus they feel snappier — no waiting
+for the release.
+
+**The aim could be a frame stale.** Even once the press registered, the host
+was reading `p.dir`, which arrives in a separate throttled `mv` packet (every
+80 ms). Press the button in the wrong 80 ms window and you charged using the
+*previous* heading, or none at all. The phone now sends its live stick vector
+**with** the button press, so aim and press can never disagree. The very first
+push of the stick also bypasses the throttle now, so opening a charge from
+standstill goes where you point.
+
+## While I was in there
+
+Aiming a leap or charge now resolves in this order:
+
+1. the stick vector that came with the press
+2. the joystick as the host last heard it
+3. **the target you tapped** — if you marked a tower, charging at it is
+   obviously what you meant
+4. the heading you were last running
+5. a walk order, the nearest foe, then the enemy keep
+
+Number 3 is new and worth knowing about: tap a tower or a hero, then charge,
+and you go at it — a second way to aim that does not need the stick at all.
+An explicitly held stick always wins over a tapped mark.
+
+Buttons also flash yellow on press. `preventDefault` on `touchstart` can
+swallow the CSS `:active` state, and a power that fires with no visible
+feedback feels broken.
+
+Tests are at **152**, adding the press-carries-its-own-aim case, the stale
+`lastDir` case that used to fire backwards, tapped-target steering, and the
+precedence between them.

@@ -1424,8 +1424,25 @@ const hurtHorde = (sim, dmg) => hurtBase(sim, 1, dmg);
    only at the instant of the press, so a player who tapped the button a
    heartbeat after letting go of the joystick would jump at whatever happened
    to be nearest — usually backwards. We remember the last real heading. */
-function facingOf(sim, p, foes) {
-  let dx = p.dir.x, dy = p.dir.y;
+/* Which way is this hero FACING? In priority order:
+     1. the stick vector sent WITH the button press — the truest answer, and
+        immune to a movement packet arriving a frame late
+     2. whatever the host last heard from the joystick
+     3. the thing you TAPPED — if you marked a tower, charging at it is
+        obviously what you meant
+     4. the heading you were last running
+     5. a walk order, then the nearest foe, then the enemy keep
+   Leaps used to read the stick only at the instant of the press, so a player
+   who tapped the button a heartbeat after letting go would jump at whatever
+   happened to be nearest — usually backwards. */
+function facingOf(sim, p, foes, hint) {
+  let dx = 0, dy = 0;
+  if (hint && (hint.x || hint.y)) { dx = hint.x; dy = hint.y; }
+  if (!dx && !dy) { dx = p.dir.x; dy = p.dir.y; }
+  if (!dx && !dy) {
+    const f = resolveFocus(sim, p);
+    if (f) { const at = aimPoint(f.what, p.x, p.y); dx = at.x - p.x; dy = at.y - p.y; }
+  }
   if (!dx && !dy && p.lastDir) { dx = p.lastDir.x; dy = p.lastDir.y; }
   if (!dx && !dy && p.moveTo) { dx = p.moveTo.x - p.x; dy = p.moveTo.y - p.y; }
   if (!dx && !dy) {
@@ -1439,7 +1456,7 @@ function facingOf(sim, p, foes) {
   return { x: dx / m, y: dy / m };
 }
 
-function castAbility(sim, playerId, i) {
+function castAbility(sim, playerId, i, hint) {
   const p = sim.players.get(playerId);
   if (!p || !p.hero || p.dead || sim.phase !== 'play') return;
   if (p.cds[i] > 0) return;
@@ -1454,7 +1471,7 @@ function castAbility(sim, playerId, i) {
     if (i === 0) {
       /* Shield Charge: close the gap, THEN slam — melee's answer to kiting.
          Charges the way you are RUNNING, never backwards into the lane. */
-      const f = facingOf(sim, p, foes);
+      const f = facingOf(sim, p, foes, hint);
       addFx(sim, 'shell', p.x, p.y, p.x + f.x * 210, p.y + f.y * 210);
       for (let hop = 210; hop >= 50; hop -= 40) {
         const nx = clamp(p.x + f.x * hop, -WORLD_W, WORLD_W);
@@ -1537,7 +1554,7 @@ function castAbility(sim, playerId, i) {
     } else {
       /* Candy Leap: bound the way you are RUNNING — the direction the stick
          was last pushed, not wherever the nearest creep happens to be. */
-      const f = facingOf(sim, p, foes);
+      const f = facingOf(sim, p, foes, hint);
       addFx(sim, 'shell', p.x, p.y, p.x + f.x * 260, p.y + f.y * 260);
       for (let hop = 260; hop >= 60; hop -= 40) {   /* land on the farthest walkable spot */
         const nx = clamp(p.x + f.x * hop, -WORLD_W, WORLD_W);
@@ -4153,7 +4170,10 @@ function createHost(ctx) {
     switch (data.k) {
       case 'pick': pickHero(sim, playerId, data.hero, data.team === 1 ? 1 : 0); sendInit(playerId); break;
       case 'mv': p.dir = { x: +data.x || 0, y: +data.y || 0 }; break;
-      case 'ab': castAbility(sim, playerId, clamp(data.i | 0, 0, 2)); break;
+      case 'ab':
+        castAbility(sim, playerId, clamp(data.i | 0, 0, 2),
+                    { x: +data.ax || 0, y: +data.ay || 0 });
+        break;
       case 'walk':
         if (sim.phase === 'play' && p.hero && !p.dead) p.moveTo = { x: +data.x || 0, y: +data.y || 0 };
         break;
@@ -4280,6 +4300,7 @@ function createController(ctx) {
   let mapCam = null;                 // pan/zoom for prep map { x, y, z }
   let stick = null;                  // active joystick touch
   let lastMv = 0, lastSent = '0,0';
+  let aim = { x: 0, y: 0 };          // live stick vector, sent with every power
   let myHero = null, myTeam = 0;
   let touch = null;                  // prep map pan/pinch state
   let onResize, ro = null;
@@ -4358,16 +4379,19 @@ function createController(ctx) {
   function bindStick() {
     const zone = $q('.gg-stickzone');
     const stickEl = $q('.gg-stick'), nub = $q('.gg-nub');
-    const move = (t) => {
+    const move = (t, force) => {
       if (!stick) return;
       let dx = t.clientX - stick.x, dy = t.clientY - stick.y;
       const m = Math.hypot(dx, dy);
       if (m > 56) { dx = (dx / m) * 56; dy = (dy / m) * 56; }
       nub.style.transform = `translate(${dx}px,${dy}px)`;
       const nx = +(dx / 56).toFixed(2), ny = +(dy / 56).toFixed(2);
+      aim = { x: nx, y: ny };                    /* powers read this, not the network */
       const key = `${nx},${ny}`;
       const now = performance.now();
-      if (key !== lastSent && now - lastMv > 80) {
+      /* the FIRST push always goes out at once — a throttled opening frame is
+         the difference between charging where you meant and charging nowhere */
+      if (key !== lastSent && (force || now - lastMv > 80)) {
         lastMv = now; lastSent = key;
         ctx.send({ k: 'mv', x: nx, y: ny });
       }
@@ -4380,7 +4404,7 @@ function createController(ctx) {
       stickEl.style.left = `${t.clientX - zr.left}px`;
       stickEl.style.top = `${t.clientY - zr.top}px`;
       stickEl.classList.add('gg-stick-live');
-      move(t);
+      move(t, true);
     }, { passive: false });
     zone.addEventListener('touchmove', (e) => {
       e.preventDefault();
@@ -4388,7 +4412,7 @@ function createController(ctx) {
     }, { passive: false });
     const end = (e) => {
       for (const t of e.changedTouches) if (stick && t.identifier === stick.id) {
-        stick = null; lastSent = '0,0';
+        stick = null; lastSent = '0,0'; aim = { x: 0, y: 0 };
         ctx.send({ k: 'mv', x: 0, y: 0 });
         stickEl.classList.remove('gg-stick-live');
         nub.style.transform = 'translate(0,0)';
@@ -4405,7 +4429,7 @@ function createController(ctx) {
       stickEl.classList.add('gg-stick-live');
       const mm = (ev) => move(ev);
       const mu = () => {
-        stick = null; lastSent = '0,0';
+        stick = null; lastSent = '0,0'; aim = { x: 0, y: 0 };
         ctx.send({ k: 'mv', x: 0, y: 0 });
         stickEl.classList.remove('gg-stick-live');
         nub.style.transform = 'translate(0,0)';
@@ -4642,8 +4666,28 @@ function createController(ctx) {
           <span class="gg-ab-name">${a[0]}</span>
           <span class="gg-ab-cd"></span>
         </button>`).join('');
+      /* FIRE ON TOUCH, not on click. A `click` is only synthesised after a
+         clean press-and-release, and a browser will happily skip it when
+         another finger is already down and the joystick is calling
+         preventDefault on its own touchmove stream — which is exactly the
+         situation every time you try to Shield Charge in the direction you
+         are running. Binding touchstart means the power fires the instant
+         your thumb lands, with the stick still held and p.dir still live. */
       for (const b of wrap.querySelectorAll('.gg-ab')) {
-        b.addEventListener('click', () => ctx.send({ k: 'ab', i: +b.dataset.i }));
+        const fire = (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          /* carry the stick vector along so the aim can never be a frame
+             behind the press — the host does not have to guess */
+          ctx.send({ k: 'ab', i: +b.dataset.i, ax: aim.x, ay: aim.y });
+          /* preventDefault can swallow :active, so flash the button ourselves —
+             a power that fires with no feedback feels broken to a seven-year-old */
+          b.classList.add('gg-ab-hit');
+          clearTimeout(b.__flash);
+          b.__flash = setTimeout(() => b.classList.remove('gg-ab-hit'), 140);
+        };
+        b.addEventListener('touchstart', fire, { passive: false });
+        b.addEventListener('mousedown', fire);       /* desktop testing */
       }
     }
     const dead = me[6] > 0;
