@@ -54,8 +54,9 @@ import topBanana from './games/topbanana.js';
 import sweetPath from './games/sweetpath.js';
 import candyKingdoms from './games/candykingdoms.js';
 import gumdropGuardians from './games/gumdropguardians.js';
+import rockCandyRally from './games/rockcandyrally.js';
 
-const GAMES = [topBanana, sweetPath, candyKingdoms, gumdropGuardians];
+const GAMES = [topBanana, sweetPath, candyKingdoms, gumdropGuardians, rockCandyRally];
 
 const AVATARS = ['🍓', '🍋', '🍇', '🫐', '🍑', '🍍', '🥝', '🍒', '🍉', '🍊'];
 const COLORS  = ['#ff4d6d', '#ff9f4a', '#ffd93d', '#6bcf7f', '#4dabf7', '#b380ff',

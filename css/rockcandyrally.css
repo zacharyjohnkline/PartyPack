@@ -1,0 +1,156 @@
+/* ============================================================
+   Rock Candy Rally 🏁
+   ============================================================ */
+
+/* ---------- host ---------- */
+.rr-host { position: absolute; inset: 0; overflow: hidden; }
+.rr-stage { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+.rr-topbar {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 14px; z-index: 5;
+}
+.rr-race-no, .rr-clock {
+  font-family: 'Fredoka', sans-serif; font-weight: 700; font-size: 18px;
+  color: #6d2c4c; background: #ffffffcc; padding: 6px 14px; border-radius: 999px;
+  white-space: nowrap;
+}
+.rr-minimap { width: min(52vw, 900px); height: 46px; }
+
+.rr-standings {
+  position: absolute; left: 12px; top: 70px; display: flex; flex-direction: column;
+  gap: 6px; z-index: 5; max-width: 240px;
+}
+.rr-chip {
+  font-family: 'Fredoka', sans-serif; font-weight: 600; font-size: 14px;
+  background: #ffffffd9; color: #4a2545; border-left: 6px solid var(--c, #999);
+  padding: 4px 10px; border-radius: 8px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+
+.rr-overlay {
+  position: absolute; inset: 0; z-index: 10;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; text-align: center; padding: 24px;
+  background: rgba(60, 18, 44, 0.45); backdrop-filter: blur(3px);
+  font-family: 'Fredoka', sans-serif; color: #fff;
+}
+.rr-overlay h1 { font-family: 'Bowlby One SC', cursive; font-size: 46px; text-shadow: 0 4px 0 #a03060; margin: 0; }
+.rr-overlay h2 { font-size: 30px; margin: 0; }
+.rr-sub { font-size: 17px; opacity: 0.92; max-width: 640px; margin: 0; }
+
+.rr-count-ov { background: transparent; backdrop-filter: none; pointer-events: none; }
+.rr-count-num {
+  font-family: 'Bowlby One SC', cursive; font-size: 150px; color: #ffd93d;
+  text-shadow: 0 6px 0 #b3751f, 0 0 40px #ffffff88;
+}
+
+.rr-pick-grid { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
+.rr-pick-card {
+  width: 190px; background: #ffffffe8; color: #4a2545; border-radius: 16px;
+  padding: 14px 12px; display: flex; flex-direction: column; align-items: center; gap: 4px;
+}
+.rr-pick-emoji { font-size: 46px; }
+.rr-pick-name { font-weight: 700; font-size: 18px; }
+.rr-pick-blurb { font-size: 13px; opacity: 0.75; }
+.rr-pick-takers { display: flex; flex-wrap: wrap; gap: 4px; min-height: 20px; margin-top: 4px; }
+.rr-pick-takers i {
+  font-style: normal; font-size: 11px; font-weight: 700; color: #fff;
+  padding: 1px 8px; border-radius: 999px;
+}
+
+.rr-btn {
+  font-family: 'Fredoka', sans-serif; font-weight: 700; font-size: 20px;
+  padding: 12px 30px; border: none; border-radius: 999px; cursor: pointer;
+  background: linear-gradient(135deg, #ff9f4a, #ff4d6d); color: #fff;
+  box-shadow: 0 4px 0 #b03050;
+}
+.rr-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 #b03050; }
+
+.rr-res-rows { display: flex; flex-direction: column; gap: 8px; min-width: min(88vw, 620px); }
+.rr-res-row {
+  display: grid; grid-template-columns: 52px 40px 1fr 70px 1fr 70px;
+  align-items: center; gap: 8px; background: #ffffffe6; color: #4a2545;
+  border-left: 8px solid var(--c, #999); border-radius: 12px; padding: 8px 14px;
+  font-weight: 600; text-align: left;
+}
+.rr-res-place { font-size: 22px; }
+.rr-res-emoji { font-size: 24px; }
+.rr-res-pay { font-size: 14px; color: #8a5a10; }
+.rr-res-pts { text-align: right; }
+.rr-pod-0 { transform: scale(1.06); }
+
+.rr-shop-status { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.rr-shop-clock { font-size: 22px; font-weight: 700; }
+
+/* ---------- controller ---------- */
+.rr-ctrl { position: absolute; inset: 0; display: flex; flex-direction: column; font-family: 'Fredoka', sans-serif; }
+
+.rr-cpick, .rr-cshop, .rr-cend {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  gap: 12px; padding: 16px; overflow-y: auto; color: #4a2545; text-align: center;
+}
+.rr-cpick h2, .rr-cshop h2 { margin: 4px 0; }
+.rr-cpick-note { font-size: 13px; opacity: 0.7; margin: 0; }
+.rr-cpick-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; width: 100%; }
+.rr-ccard {
+  border: 3px solid transparent; border-radius: 14px; background: #fff;
+  padding: 10px 8px; display: flex; flex-direction: column; align-items: center; gap: 3px;
+  font-family: inherit; color: #4a2545; cursor: pointer;
+  box-shadow: 0 3px 8px #0002;
+}
+.rr-ccard-on { border-color: #ff4d6d; background: #fff0f5; }
+.rr-ccard-emoji { font-size: 38px; }
+.rr-ccard-name { font-weight: 700; font-size: 15px; }
+.rr-ccard-blurb { font-size: 12px; font-weight: 600; color: #b03050; }
+.rr-ccard-desc { font-size: 11px; opacity: 0.75; line-height: 1.25; }
+
+.rr-cplay { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.rr-chud {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 12px; color: #4a2545; font-weight: 700; min-height: 32px;
+}
+.rr-cpos { font-size: 20px; }
+.rr-cmsg { font-size: 13px; color: #b03050; }
+.rr-citem { font-size: 13px; }
+.rr-ccam { flex: 1; min-height: 0; width: 100%; background: #ffd1e8; border-radius: 12px; }
+
+.rr-cbtns { display: flex; gap: 10px; padding: 12px 10px calc(12px + env(safe-area-inset-bottom)); }
+.rr-cbtn {
+  flex: 1; position: relative; overflow: hidden;
+  border: none; border-radius: 18px; padding: 14px 4px 10px;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  font-size: 30px; font-family: inherit; color: #fff; cursor: pointer;
+  touch-action: manipulation; -webkit-user-select: none; user-select: none;
+}
+.rr-cbtn small { font-size: 12px; font-weight: 800; letter-spacing: 1px; }
+.rr-b-throw { background: linear-gradient(135deg, #9aa2b8, #5c6478); box-shadow: 0 4px 0 #3d4354; }
+.rr-b-throw.rr-armed { background: linear-gradient(135deg, #ffd93d, #ff9f4a); box-shadow: 0 4px 0 #b3751f; }
+.rr-b-jump { background: linear-gradient(135deg, #6bcf7f, #2fbf9b); box-shadow: 0 4px 0 #1d8a6e; flex: 1.5; }
+.rr-b-power { background: linear-gradient(135deg, #b380ff, #7a89ff); box-shadow: 0 4px 0 #5560c0; }
+.rr-cbtn.rr-hit { transform: translateY(3px); box-shadow: none; }
+.rr-cd {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 0%;
+  background: #00000055; pointer-events: none; transition: height 0.15s linear;
+}
+
+.rr-ccoins { font-size: 20px; }
+.rr-cshop-rows { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.rr-shop-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: #fff; border-radius: 12px; padding: 10px 12px; box-shadow: 0 3px 8px #0002;
+  text-align: left;
+}
+.rr-shop-info { display: flex; flex-direction: column; gap: 2px; }
+.rr-shop-info small { opacity: 0.7; font-size: 11px; }
+.rr-shop-dots { color: #ff4d6d; letter-spacing: 2px; font-size: 12px; }
+.rr-shop-buy {
+  border: none; border-radius: 999px; padding: 10px 16px; font-family: inherit;
+  font-weight: 800; font-size: 15px; color: #fff; cursor: pointer;
+  background: linear-gradient(135deg, #ff9f4a, #ff4d6d); box-shadow: 0 3px 0 #b03050;
+  min-width: 74px;
+}
+.rr-shop-buy:disabled { background: #c8b8c2; box-shadow: 0 3px 0 #9a8a94; }
+
+.rr-cend-title { margin: 10px 0 0; }
+.rr-cend-body { font-size: 16px; line-height: 1.7; }

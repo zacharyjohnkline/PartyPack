@@ -1,3 +1,19 @@
+# Rock Candy Rally — new game
+
+Added `js/games/rockcandyrally.js` + `css/rockcandyrally.css`, registered in
+`js/main.js` and `index.html`. A 1-6 player side-scrolling race where all the
+skill is in timing (see README for the full rundown): four specialist candy
+racers, pulse-timed wall climbs, rhythm swimming, crest-timed shell slides,
+rocket starts, one earnable jawbreaker weapon from ? boxes, and Super
+Off-Road-style upgrades across a 4-race series. Host simulates at 30 Hz and
+snapshots to phones at 15 Hz; the track travels as a ~20-item segment list and
+both ends rebuild identical geometry with `buildTrack()`. Headless-tested with
+`__sim` hooks: full 4-race bot series completes, random-masher can't get
+permanently stuck on walls, and both screens render clean in a headless
+browser. No other game was touched.
+
+---
+
 # Gumdrop Guardians — what changed
 
 Every item from your notes, and where it lives. All changes are inside

@@ -29,6 +29,29 @@ js/main.js              networking, lobby, roster, game registry, routing
 js/util.js              shared side-effect-free helpers
 js/games/topbanana.js   Apples-to-Apples-style judging game
 js/games/sweetpath.js   Sweet Path candy board race
+js/games/rockcandyrally.js    Rock Candy Rally 🏁 (1-6 players)
+
+A timing-is-everything side-scrolling race. Everyone runs forward
+automatically — the skill is WHEN you press your three buttons (JUMP,
+POWER, THROW). Four candy racers each own one part of the track:
+🐢 Shellsworth shell-slides downhills (nail the crest for a Sweet Drop),
+🦎 Gummy Gecko owns the candy-brick walls (jump distance sets your grab
+height, then wall-jump on the pulsing beat to climb fast), 🐟 Fizzy Finn
+owns the water (tap JUMP in rhythm to build a swim combo), and 🐇 Sour
+Zippy owns the flats (Sour Sprint hits 1.5x pressed the instant he lands).
+Press JUMP right on GO for a rocket start — early and you stall.
+
+❓ boxes hold the game's ONE weapon: a jawbreaker. Carry one at a time,
+throw it to leave a trip hazard on the track — so attacks are earned,
+not spammed. Placement pays candy coins (+1 for every PERFECT timing you
+land), spent Super Off-Road-style between races on Speed / Jump / Power /
+Recovery upgrades that persist across the 4-race series.
+
+The big screen auto-frames every racer plus a full-track minimap; each
+phone renders a zoomed-in camera glued to its own racer, with the
+countdown, wall-pulse rings, swim-rhythm meter and cooldowns on-device.
+Host-authoritative 30 Hz sim, 15 Hz snapshots, phones interpolate.
+
 js/games/gumdropguardians.js  Gumdrop Guardians 🛡️ (1-6 players)
 
 A candy MOBA for the living room — co-op against the AI horde, or split into
