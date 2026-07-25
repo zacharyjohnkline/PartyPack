@@ -108,6 +108,15 @@ const REVEAL_R = 430;              // how far a walking hero can see
 const PICK_FAILSAFE = 450;         // auto-assign heroes after 45 s
 const START_COINS = 160;
 
+/* HERO PACE. The per-hero numbers below are the original sprint speeds; this
+   scales all of them at once, so there is exactly ONE dial to turn.
+   At 1.00 a hero crossed a lane tower's whole danger zone in about a second
+   and a half and simply strolled out of trouble — which, with tower reach now
+   trimmed to 195, made diving a tower nearly free. At 0.80 a dive costs you
+   roughly two zaps instead of one, creeps matter more, and corner-to-corner
+   is about 65 s instead of 53. Raise it if the kids find the walking dull. */
+const HERO_SPEED = 0.80;
+
 /* heroes — pick one at the start, it's yours for the match.
    Three abilities each (see ABILITIES below). */
 const HEROES = [
@@ -181,7 +190,7 @@ const ABILITIES = {
 const HUP = {
   dmg: { label: 'Lollipop Blade',  emoji: '🗡️', mul: 0.12, hint: '+12% attack damage per tier' },
   hp:  { label: 'Gumdrop Plate',   emoji: '🛡️', mul: 0.15, hint: '+15% max health per tier' },
-  spd: { label: 'Zoom-Zoom Boots', emoji: '👟', mul: 0.06, hint: '+6% run speed per tier' },
+  spd: { label: 'Zoom-Zoom Boots', emoji: '👟', mul: 0.045, hint: '+4.5% run speed per tier' },
   pow: { label: 'Star Charm',      emoji: '⭐', mul: 0.15, hint: '+15% ability strength per tier' },
 };
 const HUP_MAX = 8;
@@ -276,6 +285,12 @@ const WALL = {
   perLvl: 2,                       // +2 bricks per upgrade → 10 at level 5
   bend: Math.PI / 4,               // sharpest turn between neighbouring bricks
   lure: 210,                       // creeps that bump it decide to chew it
+  /* ESCAPE HATCH. The no-crossing rule is deliberate, but it can strand you:
+     climb your own wall where the friendly side happens to back onto a rock
+     ridge and there is nowhere legal left to stand. So a hero who shoves
+     against something for this long is allowed to squeeze through their OWN
+     brickwork — never the enemy's, and never through a mountain. */
+  escapeT: 8,                      // 0.8 s of getting nowhere
 };
 
 /* gummy fighters trained by barracks — no longer chihuahuas */
@@ -699,21 +714,30 @@ function wallBlocksLine(sim, x1, y1, x2, y2) {
    ever entering — and leaving — on the side their own base is on. */
 function wallPasses(sim, u, x, y, pad) {
   const hit = wallAt(sim, x, y, pad);
-  const onNow = u.__onWall || null;
+  const onNow = u.__onWall || null;          /* the brick we are standing on, if any */
   if (!hit) {
-    /* stepping OFF a brick: only ever back down the friendly side */
+    /* stepping OFF a brick: only ever back down the friendly side — unless
+       we are well and truly wedged, in which case any way out will do */
     if (onNow) {
+      if (u.__escape) return true;
       const home = baseOf(u.team);
       return wallSide(onNow, x, y) === wallSide(onNow, home.x, home.y);
     }
     return true;
   }
   if (!u.__climber) {
+    /* wedged between a rock and your OWN wall? go through it. The enemy's
+       rampart is a problem you solve with a hammer, not by leaning on it. */
+    if (u.__escape && hit.wall.team === u.team) return true;
     /* A wall raised on top of somebody must not entomb them. If they are
        ALREADY inside a brick, every step is legal until they are clear. */
     return !!wallAt(sim, u.x, u.y, 0);
   }
   if (onNow) return true;                            /* already up there — walk the top */
+  if (u.__escape && hit.wall.team === u.team) return true;
+  /* mount only from the side your own keep is on — and note this applies to
+     the ENEMY's wall too: you may scale it and shoot over, but the far side
+     stays out of reach, which is the whole point of them building it */
   const home = baseOf(u.team);
   return wallSide(hit.seg, u.x, u.y) === wallSide(hit.seg, home.x, home.y);
 }
@@ -875,7 +899,7 @@ function heroDef(p) { return HEROES[HERO_IDX.indexOf(p.hero)]; }
 const powMul = (p) => (1 + HUP.pow.mul * p.up.pow) * (1 + LVL_POW * (p.lvl - 1));
 const dmgOf = (p) => Math.round(heroDef(p).dmg * (1 + HUP.dmg.mul * p.up.dmg) * (1 + LVL_DMG * (p.lvl - 1)));
 const maxhpOf = (p) => Math.round(heroDef(p).hp * (1 + HUP.hp.mul * p.up.hp) * (1 + LVL_HP * (p.lvl - 1)));
-const speedOf = (p) => heroDef(p).speed * (1 + HUP.spd.mul * p.up.spd);
+const speedOf = (p) => heroDef(p).speed * HERO_SPEED * (1 + HUP.spd.mul * p.up.spd);
 
 /* XP: killer earns it all; TEAMMATES fighting nearby learn almost as much */
 function addXp(sim, playerId, amount, x, y) {
@@ -1902,15 +1926,24 @@ function stepBot(sim, p) {
   }
 
   if (sim.tick % 10 !== p.seat % 10) return;      // strategy thinks once a second
-  /* wedged against a tree? hop sideways to a clear spot, then re-plan */
-  const wasStuck = p.botLastX !== undefined && p.moveTo && dist(p.x, p.y, p.botLastX, p.botLastY) < 5;
+  /* Wedged against a tree — or, now, a rampart? Hop sideways to a clear spot
+     and re-plan. A bot walks straight at its goal, so a wall across the route
+     pins it; the escape has to check that the detour is not ALSO behind a
+     wall, or it just leans on the bricks from a new angle. (It will still
+     auto-attack whatever is in front of it meanwhile, so a wall that truly
+     spans the lane gets chewed down rather than walked around.) */
+  const wasStuck = (p.botLastX !== undefined && p.moveTo && dist(p.x, p.y, p.botLastX, p.botLastY) < 5)
+    || (p.stuckT || 0) > 12;
   p.botLastX = p.x; p.botLastY = p.y;
   if (wasStuck) {
     const a0 = Math.random() * Math.PI * 2;
     for (let k = 0; k < 8; k++) {
       const a = a0 + (k * Math.PI) / 4;
       const jx = p.x + Math.cos(a) * 150, jy = p.y + Math.sin(a) * 150;
-      if (walkable(sim.world, jx, jy)) { p.moveTo = { x: jx, y: jy }; p.botWp = null; return; }
+      if (!walkable(sim.world, jx, jy)) continue;
+      if (wallAt(sim, jx, jy, 16)) continue;                  /* don't aim INTO bricks */
+      if (wallBlocksLine(sim, p.x, p.y, jx, jy)) continue;    /* nor through them */
+      p.moveTo = { x: jx, y: jy }; p.botWp = null; p.stuckT = 0; return;
     }
   }
   const hd = hdSafe;
@@ -2457,8 +2490,13 @@ function stepSim(sim) {
        side — wallPasses() enforces both, it just needs telling who is who. */
     p.__climber = hdR.range > 100;
     const perch = p.__climber ? wallAt(sim, p.x, p.y, 0) : null;
-    p.__onWall = perch && perch.wall.team === p.team ? perch.seg : null;
+    p.__onWall = perch ? perch.seg : null;
     p.onWall = p.__onWall ? 1 : 0;
+    /* armed by LAST tick's shoving: if we have been leaning on something and
+       getting nowhere, this tick we are allowed through our own brickwork */
+    p.__escape = (p.stuckT || 0) >= WALL.escapeT;
+    const wasX = p.x, wasY = p.y;
+    const pushing = !!(p.dir.x || p.dir.y || p.moveTo);
     if (p.dir.x || p.dir.y) {
       const m = Math.hypot(p.dir.x, p.dir.y) || 1;
       p.lastDir = { x: p.dir.x / m, y: p.dir.y / m };     /* remembered for LEAPS */
@@ -2472,6 +2510,9 @@ function stepSim(sim) {
         slideMove(sim, p, p.x + ((p.moveTo.x - p.x) / d) * spd, p.y + ((p.moveTo.y - p.y) / d) * spd, hdR.r * 0.6);
       }
     }
+    /* did that actually get us anywhere? */
+    if (pushing && dist(p.x, p.y, wasX, wasY) < spd * 0.3) p.stuckT = (p.stuckT || 0) + 1;
+    else p.stuckT = 0;
     p.x = clamp(p.x, -WORLD_W, WORLD_W);
     p.y = clamp(p.y, -WORLD_H, WORLD_H);
     for (const team of [0, 1]) {                       // nobody walks through either keep
@@ -4879,7 +4920,7 @@ export const __sim = {
   E_SKIN, A_SKIN, BASE_RING, BASE_ZONE, TEAM_NAME, WORLD_W, WORLD_H,
   WALK_COLS, WALK_ROWS, WALK_CELL, SPAWN_EVERY, GROUP_SIZE, LANE_SIZE, LANE_CAP, XP_LVL, LVL_MAX, SPRING_R, SPRING_HEAL, N_SPRINGS,
   BUILD_R, ARMOR_MIT, ARMOR_MAX_T, CAPTURE_HP, killHero, hitHeroFrom,
-  TOWER_NEAR, TOWER_FAR_MUL, BACKSTEP_R, BACKSTEP_CD, speedOf,
+  TOWER_NEAR, TOWER_FAR_MUL, BACKSTEP_R, BACKSTEP_CD, speedOf, HERO_SPEED, HUP,
   resolveCollisions, towerDmgVsHero, towerDmgVsCreep,
   revealCircle, fogIdx,
   /* the new machinery: walls, focus fire, economy, caps */

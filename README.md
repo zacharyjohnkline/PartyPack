@@ -153,8 +153,8 @@ a closer drink — heal any hero who wades in, either team. Melee heroes
 regenerate anywhere but ONLY out of combat; ranged heroes have no passive
 regen but recover 50% faster at fountains and springs.
 
-Melee and ranged are a real fork. Melee is FASTER on foot (9.3 vs 9.0), so it
-can actually engage — and Shield Charge and Candy Leap now carry you the way
+Hero pace is set by one dial, `HERO_SPEED` (0.80). Melee and ranged are still
+a real fork — melee is FASTER on foot (7.44 vs 7.20), so it can actually engage — and Shield Charge and Candy Leap now carry you the way
 you are RUNNING, using the heading the stick was last pushed rather than
 whatever creep happened to be nearest. Ranged trades that speed for reach,
 air attacks, safe farming beyond creep aggro range, halved tower damage at
@@ -174,7 +174,7 @@ the live map, and the shop overlay for gear, building, and upgrades.
 Two headless suites, no browser needed:
 
 ```bash
-node test-gg.mjs      # 127 rules checks: waves, economy, walls, fountain, targeting
+node test-gg.mjs      # 146 rules checks: waves, economy, walls, fountain, targeting
 node stress-gg.mjs    # walls thrown across live lanes, long matches, tick budget
 ```
 

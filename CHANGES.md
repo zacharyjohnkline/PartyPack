@@ -154,3 +154,67 @@ Two real bugs surfaced this way and were fixed: the muster walk never advanced
 for the horde side (all 15 still spawned inside the cavern — your original
 complaint, which would have shipped silently), and a terrain-blocked wall
 upgrade charged full price for partial growth.
+
+---
+
+# Follow-up round
+
+## The wall trap
+
+You got pinned between a rock and your own wall. The no-crossing rule was
+doing exactly what it was told — a hero on the parapet may only step down on
+the side their own base is on — but nothing checked whether that side was
+actually *reachable*. Climb where the friendly side happens to back onto a
+rock ridge and there is nowhere legal left to stand.
+
+Fix is an escape hatch rather than a loosened rule, so the wall still does its
+job. A hero who shoves against something and gets nowhere for **0.8 seconds**
+may squeeze through **their own** brickwork. Never the enemy's — that is a
+problem you solve with a hammer — and never through a mountain, so there is no
+walking through terrain.
+
+While testing this I found a second, worse bug: perch tracking only recognised
+*friendly* walls, so a ranged hero standing on an **enemy** wall was treated as
+not being on a wall at all — and could stroll straight across it. That defeated
+the entire point of an enemy rampart. Now the climb rules apply to any wall:
+you may scale the enemy's from your own side and shoot over it, but the far
+side stays out of reach.
+
+Bots also got wall-aware. Their existing unstick routine picked a random
+walkable spot, which could easily be on the far side of a wall — so they would
+lean on the bricks from a fresh angle. It now rejects detours that are inside
+or behind a wall. Worst-case bot freeze across seven seeds dropped from 331 s
+to 52 s.
+
+**Note:** bots occasionally standing still is not new and not wall-related. I
+measured the untouched original game at a 234 s worst case versus 110 s for
+this build, and most of it is bots deliberately holding position waiting for a
+wave. Left alone.
+
+## Hero pace
+
+Heroes are **20% slower**. There is now one dial, `HERO_SPEED = 0.80`, near
+the top of the file — the per-hero numbers underneath are untouched, so the
+melee/ranged fork is preserved.
+
+Zoom-Zoom Boots also went from +6% to +4.5% per tier. At tier VIII the old
+value handed back +48%, which stacked on top of Frenzy and Haste and put a
+geared hero right back where they started.
+
+What that buys you against a tower:
+
+| | Before | Now |
+|---|---|---|
+| Melee sprint | 9.30 px/tick | **7.44** |
+| Ranged sprint | 9.00 | **7.20** |
+| Zaps taken escaping a tower | ~1.40 | **~1.75** |
+| ...with Boots VIII | ~0.95 | **~1.28** |
+| Corner to corner | 53 s | **66 s** |
+
+Heroes still comfortably outrun creeps (7.4 vs a runner's 2.7), so farming
+still works. If it feels like a slog on the walk back from a respawn, raise
+`HERO_SPEED` — 0.85 gives you back about half the change. If they still slip
+away from towers too easily, 0.72 costs roughly two full zaps per escape.
+
+Test count is now **146**, adding coverage for the escape hatch arming and
+disarming, the enemy-wall climb rules, and the tower-escape maths.
