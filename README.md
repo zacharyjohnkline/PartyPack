@@ -54,14 +54,19 @@ The war is perfectly fair — every 20 seconds both bases march an IDENTICAL
 group of 10 (same classes, different costumes). Creep waves attack enemy
 towers along their path as first-class targets, and every creep survives
 exactly 4 tower zaps no matter how big it is. Each army owns 12 towers (two
-per lane, a ring of six around the base, front AND rear) — but downed towers
-aren't destroyed, they're CAPTURED: they switch sides at half health and
-immediately fight for their new owners. Towers fell a fresh level-1 hero in
+per lane, a ring of six around the base, front AND rear). Downed LANE towers
+aren't destroyed, they're CAPTURED: they switch sides at FULL health and
+immediately fight for their new owners. The six base-ring guards are the
+exception — those are destroyed for good, and the base stays shielded until
+every one of them is rubble. Towers fell a fresh level-1 hero in
 4 zaps, stretching to 10 zaps at level 10. And each base is SHIELDED while
 any of its six ring guards still fly its flag — no bum-rushing the enemy
 keep; the ring must be dismantled (captured!) first. Player-built structures
 are formidable too: triple health, and turrets & mortars open fire on rival
-heroes.
+heroes — but you can only place them within arm's reach of your own living
+hero, so fortifying means physically walking somewhere and holding it. And
+dying hurts: a fallen hero drops every coin they were carrying, so diving a
+tower with a full purse is a genuine gamble.
 
 Teams always come out EQUAL: if the sides are uneven (3v1, or a lone player
 vs nobody), robot players — Robo Rollo, Auto Aggie, Circuit Cindy and friends —
@@ -80,12 +85,21 @@ SPRINGS — mirrored across the map so neither side gets a closer drink — heal
 any hero who wades in, either team. Sustain is a real choice now: melee
 heroes regenerate anywhere but ONLY out of combat (taking a hit pauses it
 for 5 s), while ranged heroes have no passive regen but recover 50% faster
-at fountains and springs — tank the front line, or skirmish and dart back
-for a quick drink. Heroes grow through battle-earned LEVELS (now a long road all the way
+at fountains and springs.
+
+Melee and ranged are a real fork. Melee is FASTER on foot (9.3 vs 9.0), so
+it can actually engage — and Sir Crunch-a-Lot now opens with Shield Charge,
+a 210 px dash that ends in a stunning slam. Ranged trades that speed for
+reach, air attacks (2 of every 10 creeps fly, and melee can't auto-attack
+them at all), safe farming beyond creep aggro range, halved tower damage at
+distance, and two escape tools: BACKSTEP, an automatic burst of speed the
+moment something jumps you at knife range (8 s cooldown, so it can't be
+spammed), and for the mage and shaman, a dash built right into their nova. Heroes grow through battle-earned LEVELS (now a long road all the way
 to 25) and tiered GEAR from the 🎒 phone shop, mid-fight, no pauses; idle
-ground artillery besieges enemy structures. And everything has a real HITBOX:
-heroes, creeps, neutrals, towers, and buildings are solid bodies — crowds
-flow and shove, but nobody skates through anybody.
+ground artillery besieges enemy structures. And everything has a real HITBOX,
+resolved inside the game tick itself: heroes stop dead against towers and
+buildings, heroes stop against each other, and creep packs shove rather than
+hard-wall — you can wade through a crowd, but it costs you real time.
 
 Phones are full controllers: joystick, three hero powers, a live view of your
 hero, and the shop overlay for gear, building, and tower upgrades.

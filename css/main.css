@@ -473,6 +473,16 @@ button:focus-visible, input:focus-visible {
 .ctrl-wait .ctrl-btn + .ctrl-btn { margin-top: 10px; }
 
 .ctrl-host-exit {
+  /* games cover the whole controller screen, so this has to float over them
+     or the party host can never send everyone back to the menu */
+  position: fixed;
+  /* sits just BELOW a game's own status bar so it never covers the HUD,
+     but always on top of the game canvas so the host can reach it */
+  top: calc(52px + env(safe-area-inset-top));
+  right: calc(8px + env(safe-area-inset-right));
+  z-index: 9999;
+  opacity: 0.92;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.4);
   border: none;
   background: #fff;
   border-radius: 999px;
@@ -495,3 +505,21 @@ button:focus-visible, input:focus-visible {
   .join-panel { flex: 0 0 auto; width: min(320px, 100%); }
   .game-picker { width: 100%; }
 }
+
+
+/* ---------- change your name any time you're in the menu ---------- */
+.ctrl-rename {
+  margin-top: 22px;
+  width: 100%;
+  max-width: 320px;
+  margin-left: auto; margin-right: auto;
+  text-align: left;
+}
+.ctrl-rename-row { display: flex; gap: 8px; align-items: stretch; }
+.ctrl-rename-row .ctrl-input { flex: 1 1 auto; margin: 0; }
+.ctrl-rename-btn { flex: 0 0 auto; padding-left: 18px; padding-right: 18px; }
+.ctrl-rename .ctrl-status { min-height: 18px; margin-top: 6px; font-size: 13px; }
+
+/* ---------- iPad: never let a stray tap zoom the page ---------- */
+html, body { touch-action: manipulation; -webkit-text-size-adjust: 100%; }
+button, .ctrl-btn, .ctrl-link, .game-card, .chip { touch-action: manipulation; }

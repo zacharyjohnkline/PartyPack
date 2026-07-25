@@ -386,6 +386,21 @@ function startHost() {
       return;
     }
 
+    if (msg.type === 'rename') {
+      const pid = conn.metadata_ppid;
+      const p = pid ? players.get(pid) : null;
+      if (p && scene === 'lobby') {
+        const nm = sanitizeName(msg.name);
+        if (nm) {
+          p.name = nm;
+          sendRaw(p, { type: 'renamed', name: nm });
+          renderRoster(); renderGameGrid();
+          broadcastParty();
+        }
+      }
+      return;
+    }
+
     if (msg.type === 'exit-game') {
       const pid = conn.metadata_ppid;
       if (pid && pid === partyHostId && scene === 'game') exitGame();
@@ -526,6 +541,17 @@ function startController(codeFromUrl) {
   function handleHostMessage(msg, code) {
     if (!msg || typeof msg !== 'object') return;
 
+    if (msg.type === 'renamed') {
+      if (me) me.name = msg.name;
+      writeJson('pp_ctrl_saved', { room: code, playerId: me ? me.playerId : null, name: msg.name });
+      try { localStorage.setItem('pp_ctrl_name', msg.name); } catch (e) {}
+      $('ctrl-player-name').textContent = msg.name;
+      if (lastJoin) lastJoin.name = msg.name;
+      const st = document.getElementById('ctrl-rename-status');
+      if (st) { st.textContent = 'Saved! 👍'; setTimeout(() => { if (st) st.textContent = ''; }, 1600); }
+      return;
+    }
+
     if (msg.type === 'welcome') {
       me = { playerId: msg.playerId, name: msg.name, avatar: msg.avatar, color: msg.color };
       writeJson('pp_ctrl_saved', { room: code, playerId: msg.playerId, name: msg.name });
@@ -661,7 +687,28 @@ function startController(codeFromUrl) {
         <div class="ctrl-wait-emoji">🎉</div>
         <p>${hostLine}</p>
         ${hostLive ? '' : '<button class="ctrl-btn ctrl-btn-big ctrl-claim-btn">👑 Become host</button>'}
+        <div class="ctrl-rename">
+          <label class="ctrl-label" for="ctrl-rename-input">Your name</label>
+          <div class="ctrl-rename-row">
+            <input id="ctrl-rename-input" class="ctrl-input" maxlength="20"
+                   autocomplete="off" value="${escapeHtml(me ? me.name : '')}" />
+            <button class="ctrl-btn ctrl-rename-btn">Save</button>
+          </div>
+          <div id="ctrl-rename-status" class="ctrl-status"></div>
+        </div>
       </div>`;
+    const nameInput = root.querySelector('#ctrl-rename-input');
+    const saveName = () => {
+      const nm = nameInput.value.trim();
+      const st = document.getElementById('ctrl-rename-status');
+      if (!nm) { if (st) st.textContent = 'Pick a name your friends will know!'; return; }
+      if (me && nm === me.name) { if (st) st.textContent = 'That\'s already your name 🙂'; return; }
+      if (conn && conn.open) conn.send({ type: 'rename', name: nm });
+      else if (st) st.textContent = 'Not connected — try again in a moment.';
+      nameInput.blur();
+    };
+    root.querySelector('.ctrl-rename-btn').addEventListener('click', saveName);
+    nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveName(); });
     const claim = root.querySelector('.ctrl-claim-btn');
     if (claim) {
       claim.addEventListener('click', () => {
@@ -696,6 +743,30 @@ function startController(codeFromUrl) {
 /* ============================================================
    Small utilities
    ============================================================ */
+/* ---------- iPad / iOS: stop the page itself from zooming ----------
+   Safari ignores `user-scalable=no`, so a stray double-tap or a pinch that
+   misses the game canvas would zoom the whole page — and because the canvas
+   swallows the pinch that would undo it, you'd be stuck zoomed in forever.
+   We block the gestures at the document level instead. */
+function lockPageZoom() {
+  let lastTouchEnd = 0;
+  document.addEventListener('touchend', (e) => {
+    const now = Date.now();
+    if (now - lastTouchEnd <= 350) e.preventDefault();   // the SECOND tap only
+    lastTouchEnd = now;
+  }, { passive: false });
+  /* iOS-only pinch events, fired on the page rather than an element */
+  for (const t of ['gesturestart', 'gesturechange', 'gestureend']) {
+    document.addEventListener(t, (e) => e.preventDefault(), { passive: false });
+  }
+  /* a two-finger drag that started outside the canvas */
+  document.addEventListener('touchmove', (e) => {
+    if (e.touches && e.touches.length > 1) e.preventDefault();
+  }, { passive: false });
+  document.addEventListener('dblclick', (e) => e.preventDefault(), { passive: false });
+}
+lockPageZoom();
+
 function sanitizeName(s) {
   return String(s || '').replace(/[<>]/g, '').trim().slice(0, 20);
 }

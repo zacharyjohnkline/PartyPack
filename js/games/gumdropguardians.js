@@ -40,21 +40,37 @@ const HORDE  = { r: 120, hp: 5200, x: -1720, y: -784 };  // enemy cavern — des
 const SPAWN_EVERY = 200;           // ticks between creep groups
 const GROUP_SIZE = 10;             // units per group, per side
 const TIME_SCALE = 0.08;           // enemy hp/dmg +8% per minute
+const BUILD_R = 340;               // you can only build within arm's reach of your hero
 const FOUNTAIN_R = 300;            // heroes heal fast near their own base
 const FOUNTAIN_HEAL = 0.005;       // 5%/s at home — no more endless waits
 const REGEN_OOC = 50;              // melee regen pauses for 5 s after taking a hit
+const ARMOR_MIT = 0.65;            // shields soften a hit by 35% — never again 60%
+const ARMOR_MAX_T = 140;           // ...and never last longer than 14 s (cooldown is 30)
+const BUFF_MAX_T = 160;            // same ceiling for frenzy/haste: no permanent buffs
+const COLLIDE_PUSH = 0.55;         // how hard overlapping bodies shove apart
+const COLLIDE_PASSES = 3;          // ...resolved a few times a tick so crowds settle
+const BACKSTEP_R = 95;             // "something is ON me" — ranged heroes bolt
+const BACKSTEP_T = 20, BACKSTEP_CD = 80;
+const DISENGAGE_T = 25;            // mage/shaman blink-step after their nova
 const RANGED_REST = 1.5;           // ranged heroes drink 50% faster at fountains & springs
 const N_SPRINGS = 4;               // neutral soda springs scattered over the map
 const SPRING_R = 170;
 const SPRING_HEAL = 0.0035;        // 3.5%/s, either team, fight over them!
 const COIN_TRICKLE = 1;            // passive coins per second per player
 
-/* lane towers — every creep dies in exactly 4 zaps; heroes take 4 zaps at
-   level 1, stretching to 10 zaps by level 10. Downed towers are CAPTURED. */
-const ETOWER = { hp: 2600, dmg: 160, range: 270, cd: 15, r: 34, coin: 120, xp: 150 };
+/* lane towers. Against HEROES the zap is a flat 200 in the inner band and
+   half that further out, so where you stand decides what it costs you:
+     · a level-1 tank eats 4 point-blank zaps, a level-25 tank eats 12
+     · squishier heroes fall proportionally faster — but at range, twice as slow
+   Creeps still die in exactly 4 zaps whatever the game clock says. */
+const ETOWER = { hp: 2600, dmg: 200, range: 270, cd: 15, r: 34, coin: 120, xp: 150 };
+const TOWER_NEAR = 150;            // point-blank band: full force
+const TOWER_FAR_MUL = 0.5;         // beyond it: a glancing bolt
 const towerDmgVsCreep = (u) => Math.ceil(u.maxhp * 0.25);
-const towerDmgVsHero = (p) => Math.ceil(p.maxhp / (4 + (Math.min(p.lvl, 10) - 1) * (6 / 9) + Math.max(0, p.lvl - 10) * 0.2));
-const CAPTURE_HP = 0.5;            // a freshly captured tower stands back up at half health
+const towerDmgVsHero = (p, d) => (d === undefined || d <= TOWER_NEAR
+  ? ETOWER.dmg
+  : Math.round(ETOWER.dmg * TOWER_FAR_MUL));
+const CAPTURE_HP = 1;              // a captured lane tower stands back up at FULL health
 const ETOWER_AT = [0.45, 0.22];    // fractions along each lane, measured from the owner's base
 const BASE_RING = [[350, 60], [60, 350], [290, 290], [150, 150],
                    [-250, -40], [-40, -250]];   // guard towers hugging each base — REAR covered too
@@ -78,21 +94,21 @@ const START_COINS = 160;
    Three abilities each (see ABILITIES below). */
 const HEROES = [
   /* 🍬 Gummi Kingdom roster */
-  { id: 'knight',  team: 0, name: 'Sir Crunch-a-Lot', emoji: '🛡️', desc: 'Melee tank — huge health that regrows out of combat.',
-    hp: 780, dmg: 22, range: 40,  cd: 8, speed: 9.0, r: 20, hitAir: false, regen: 0.0011 },
-  { id: 'ranger',  team: 0, name: 'Huckleberry Fin',  emoji: '🏹', desc: 'Long-range berry archer — and the fastest healer at springs.',
-    hp: 260, dmg: 14, range: 190, cd: 7, speed: 9.6, r: 18, hitAir: true },
-  { id: 'mage',    team: 0, name: 'Minty Merlin',     emoji: '🧙', desc: 'Splashy spells, meteors, a team heal — rests fast at springs.',
-    hp: 240, dmg: 11, range: 170, cd: 9, speed: 8.7, r: 18, hitAir: true, splash: 45 },
+  { id: 'knight',  team: 0, name: 'Sir Crunch-a-Lot', emoji: '🛡️', desc: 'Melee tank — charges in, huge health, regrows out of combat.',
+    hp: 700, dmg: 22, range: 40,  cd: 8, speed: 9.3, r: 20, hitAir: false, regen: 0.0011 },
+  { id: 'ranger',  team: 0, name: 'Huckleberry Fin',  emoji: '🏹', desc: 'Long-range archer — Backsteps when cornered, heals fast at springs.',
+    hp: 260, dmg: 14, range: 190, cd: 7, speed: 9.0, r: 18, hitAir: true },
+  { id: 'mage',    team: 0, name: 'Minty Merlin',     emoji: '🧙', desc: 'Splash spells & meteors — frost-steps free, rests fast at springs.',
+    hp: 240, dmg: 11, range: 170, cd: 9, speed: 9.0, r: 18, hitAir: true, splash: 45 },
   { id: 'builder', team: 0, name: 'Gingerbread Greta', emoji: '🔧', desc: 'Melee builder — towers cost 20% less, regrows out of combat.',
     hp: 600, dmg: 12, range: 60,  cd: 8, speed: 9.3, r: 19, hitAir: false, discount: 0.8, regen: 0.0011 },
   /* 👹 Rock Candy Horde roster — same roles, totally different powers */
   { id: 'slasher', team: 1, name: 'Sourpuss Slasher', emoji: '🗡️', desc: 'Twin-blade brawler — spins, rages, LEAPS. Regrows out of combat.',
-    hp: 740, dmg: 24, range: 42,  cd: 8, speed: 9.2, r: 20, hitAir: false, regen: 0.0011 },
-  { id: 'whip',    team: 1, name: 'Licorice Lasher',  emoji: '🪢', desc: 'Whip skirmisher — snares packs, hastens the horde, rests fast.',
-    hp: 270, dmg: 13, range: 200, cd: 7, speed: 9.6, r: 18, hitAir: true },
-  { id: 'shaman',  team: 1, name: 'Rock Candy Shaman', emoji: '🔮', desc: 'Crystal hexes: shard storms, walls, and life-draining feasts.',
-    hp: 240, dmg: 11, range: 170, cd: 9, speed: 8.7, r: 18, hitAir: true, splash: 40 },
+    hp: 740, dmg: 24, range: 42,  cd: 8, speed: 9.3, r: 20, hitAir: false, regen: 0.0011 },
+  { id: 'whip',    team: 1, name: 'Licorice Lasher',  emoji: '🪢', desc: 'Whip skirmisher — snares packs, Backsteps free, hastens the horde.',
+    hp: 270, dmg: 13, range: 200, cd: 7, speed: 9.0, r: 18, hitAir: true },
+  { id: 'shaman',  team: 1, name: 'Rock Candy Shaman', emoji: '🔮', desc: 'Crystal hexes & life-drain — shard-steps free, rests fast at springs.',
+    hp: 240, dmg: 11, range: 170, cd: 9, speed: 9.0, r: 18, hitAir: true, splash: 40 },
   { id: 'tinker',  team: 1, name: 'Taffy Tinker',      emoji: '⚙️', desc: 'Gadget builder — cheap towers, scrap turrets, regrows out of combat.',
     hp: 580, dmg: 12, range: 60,  cd: 8, speed: 9.3, r: 19, hitAir: false, discount: 0.8, regen: 0.0011 },
 ];
@@ -102,9 +118,9 @@ const heroesOfTeam = (team) => HEROES.filter((h) => h.team === team);
 /* abilities — [name, emoji, cooldown ticks, blurb] ; numbers live in castAbility */
 const ABILITIES = {
   knight: [
-    ['Shield Bash', '💥', 180, 'Slam nearby foes: damage + stun'],
+    ['Shield Charge', '🐏', 180, 'CHARGE forward, then slam: damage + stun'],
     ['Battle Cry',  '📣', 250, 'Taunt — enemies nearby chase YOU'],
-    ['Frosting Armor', '🧊', 300, 'Take 60% less damage for a while'],
+    ['Frosting Armor', '🧊', 300, 'Take 35% less damage briefly (towers pierce it)'],
   ],
   ranger: [
     ['Berry Barrage', '🫐', 200, 'Hit every enemy around you'],
@@ -132,7 +148,7 @@ const ABILITIES = {
     ['Sugar Rush', '🍭', 320, 'Your whole team sprints for a while'],
   ],
   shaman: [
-    ['Shard Volley', '💎', 190, 'Crystal shards: damage + stun around you'],
+    ['Shard Volley', '💎', 190, 'Crystal shards: damage + stun — and YOU dash free'],
     ['Crystal Wall', '🧱', 350, 'Raise a wall of rock candy right here'],
     ['Dark Feast', '🦇', 260, 'Drain life from every foe near you'],
   ],
@@ -779,24 +795,16 @@ function spawnGroups(sim) {
   addFx(sim, 'spawn', CASTLE.x, CASTLE.y);
 }
 
-function spawnAIHero(sim, team) {
-  const roster = team === 1 ? EHEROES : AHEROES;
-  const n = sim.aiHeroN[team]++;
-  const type = roster[n % roster.length];
-  const mult = warMult(sim) * (1 + 0.12 * Math.floor(n / roster.length));
-  const u = spawnCreep(sim, team, type, (Math.random() * N_PATHS) | 0, mult);
-  addFx(sim, 'horn', u.x, u.y);
-  return u;
-}
-
 /* ---------------- building (any time, either team) ---------------- */
 
 function build(sim, playerId, type, x, y) {
   const p = sim.players.get(playerId);
   if (!p || !p.hero || !BUILDABLE.includes(type)) return 'nope';
   const def = BLD[type];
+  if (p.dead) return 'dead';                       /* ghosts don't lay bricks */
   const cost = Math.round(def.cost * (heroDef(p).discount || 1));
   if (p.coins < cost) return 'coins';
+  if (dist(p.x, p.y, x, y) > BUILD_R) return 'far';
   if (!sim.fog[fogIdx(x, y)]) return 'fog';
   if (!canPlace(sim.world, sim.blds, x, y)) return 'spot';
   p.coins -= cost;
@@ -875,7 +883,7 @@ function oppHeroes(sim, team) {
 }
 /* hero-on-hero damage: armor applies; a takedown pays coins + XP by victim level */
 function pvpHit(sim, victim, dmg, attacker) {
-  const d = victim.armor > 0 ? Math.round(dmg * 0.4) : Math.round(dmg);
+  const d = victim.armor > 0 ? Math.round(dmg * ARMOR_MIT) : Math.round(dmg);
   victim.hp -= d;
   victim.hurtAt = sim.tick;
   addFx(sim, 'hit', victim.x, victim.y);
@@ -894,6 +902,8 @@ function applySlowHero(p, amt, ticks) {
 
 function killHero(sim, p) {
   p.dead = true; p.respawn = RESPAWN_T(minutesOf(sim)); p.dir = { x: 0, y: 0 }; p.moveTo = null;
+  p.coins = 0;                                     /* your purse spills in the candy grass */
+  p.armor = 0; p.frenzy = 0; p.haste = 0;
   addFx(sim, 'herodown', p.x, p.y);
 }
 
@@ -946,11 +956,16 @@ function hurtTower(sim, tw, team, dmg, owner) {
     const from = towersOf(sim, team);
     const i = from.indexOf(tw);
     if (i >= 0) from.splice(i, 1);
-    tw.hp = Math.round(tw.maxhp * CAPTURE_HP);
-    tw.cd = 25;
-    towersOf(sim, winners).push(tw);
-    addFx(sim, 'towerdown', tw.x, tw.y);
-    addFx(sim, 'built', tw.x, tw.y);
+    if (tw.ring) {
+      addFx(sim, 'crumble', tw.x, tw.y);      /* base guards are rubble — never captured */
+      addFx(sim, 'towerdown', tw.x, tw.y);
+    } else {
+      tw.hp = Math.round(tw.maxhp * CAPTURE_HP);
+      tw.cd = 25;
+      towersOf(sim, winners).push(tw);        /* lane towers defect at full strength */
+      addFx(sim, 'towerdown', tw.x, tw.y);
+      addFx(sim, 'built', tw.x, tw.y);
+    }
   }
 }
 
@@ -989,6 +1004,23 @@ function castAbility(sim, playerId, i) {
 
   if (p.hero === 'knight') {
     if (i === 0) {
+      /* Shield Charge: close the gap, THEN slam — melee's answer to kiting */
+      let dx = p.dir.x, dy = p.dir.y;
+      if (!dx && !dy && p.moveTo) { dx = p.moveTo.x - p.x; dy = p.moveTo.y - p.y; }
+      if (!dx && !dy) {
+        let near = null, nd = Infinity;
+        for (const q of oppHeroes(sim, p.team)) { const d = dist(q.x, q.y, p.x, p.y); if (d < nd) { nd = d; near = q; } }
+        for (const e of foes) { const d = dist(e.x, e.y, p.x, p.y); if (d < nd) { nd = d; near = e; } }
+        if (near) { dx = near.x - p.x; dy = near.y - p.y; }
+        else { const ob = baseOf(1 - p.team); dx = ob.x - p.x; dy = ob.y - p.y; }
+      }
+      const m = Math.hypot(dx, dy) || 1;
+      addFx(sim, 'shell', p.x, p.y, p.x + (dx / m) * 210, p.y + (dy / m) * 210);
+      for (let hop = 210; hop >= 50; hop -= 40) {
+        const nx = clamp(p.x + (dx / m) * hop, -WORLD_W, WORLD_W);
+        const ny = clamp(p.y + (dy / m) * hop, -WORLD_H, WORLD_H);
+        if (walkable(sim.world, nx, ny)) { p.x = nx; p.y = ny; break; }
+      }
       addFx(sim, 'bash', p.x, p.y, undefined, undefined, 130);
       for (const e of foes) if (dist(e.x, e.y, p.x, p.y) <= 130) {
         hurtCreep(sim, e, Math.round(40 * pm), p.id);
@@ -1002,7 +1034,7 @@ function castAbility(sim, playerId, i) {
         e.taunt = { id: p.id, t: Math.round(60 * pm) };
       }
     } else {
-      p.armor = Math.round(80 * pm);
+      p.armor = Math.min(ARMOR_MAX_T, Math.round(70 + 30 * (pm - 1)));
       addFx(sim, 'shield', p.x, p.y);
     }
   } else if (p.hero === 'ranger') {
@@ -1027,6 +1059,7 @@ function castAbility(sim, playerId, i) {
   } else if (p.hero === 'mage') {
     if (i === 0) {
       addFx(sim, 'nova', p.x, p.y, undefined, undefined, 180);
+      p.haste = Math.max(p.haste || 0, DISENGAGE_T);      /* frost-step out of trouble */
       for (const e of foes) if (dist(e.x, e.y, p.x, p.y) <= 180) {
         hurtCreep(sim, e, Math.round(25 * pm), p.id);
         applySlow(e, 0.5, 40);
@@ -1059,7 +1092,7 @@ function castAbility(sim, playerId, i) {
       for (const q of oppHeroes(sim, p.team)) if (dist(q.x, q.y, p.x, p.y) <= 130) pvpHit(sim, q, 45 * pm, p);
       for (const n of sim.neutrals) if (dist(n.x, n.y, p.x, p.y) <= 130) hurtNeutral(sim, n, Math.round(45 * pm), p.id);
     } else if (i === 1) {
-      p.frenzy = Math.round(60 * pm);              /* attack + move like a sugar rush */
+      p.frenzy = Math.min(BUFF_MAX_T, Math.round(55 + 25 * (pm - 1)));   /* a rush, not a lifestyle */
       addFx(sim, 'overclock', p.x, p.y, undefined, undefined, 60);
     } else {
       /* Candy Leap: bound toward where you're headed (or the nearest foe) */
@@ -1101,12 +1134,13 @@ function castAbility(sim, playerId, i) {
     } else {
       addFx(sim, 'overclock', p.x, p.y, undefined, undefined, 400);
       for (const q of sim.players.values()) {
-        if (q.hero && !q.dead && q.team === p.team && dist(q.x, q.y, p.x, p.y) <= 400) q.haste = Math.round(50 * pm);
+        if (q.hero && !q.dead && q.team === p.team && dist(q.x, q.y, p.x, p.y) <= 400) q.haste = Math.min(BUFF_MAX_T, Math.round(45 + 25 * (pm - 1)));
       }
     }
   } else if (p.hero === 'shaman') {
     if (i === 0) {
       addFx(sim, 'nova', p.x, p.y, undefined, undefined, 170);
+      p.haste = Math.max(p.haste || 0, DISENGAGE_T);      /* shard-step out of trouble */
       for (const e of foes) if (dist(e.x, e.y, p.x, p.y) <= 170) {
         hurtCreep(sim, e, Math.round(25 * pm), p.id);
         if (!creepDef(e.team, e.type).boss) e.stun = Math.max(e.stun, 12);
@@ -1209,8 +1243,8 @@ function tgtPos(sim, u, tgt) {
   return null;
 }
 
-function hitHeroFrom(sim, p, rawDmg) {
-  const dmg = p.armor > 0 ? Math.round(rawDmg * 0.4) : rawDmg;
+function hitHeroFrom(sim, p, rawDmg, ignoreArmor) {
+  const dmg = p.armor > 0 && !ignoreArmor ? Math.round(rawDmg * ARMOR_MIT) : rawDmg;
   p.hp -= dmg;
   p.hurtAt = sim.tick;
   if (p.hp <= 0) killHero(sim, p);
@@ -1507,7 +1541,7 @@ function stepTower(sim, tw, team) {
   if (!best) return;
   tw.cd = ETOWER.cd;
   addFx(sim, 'etzap', tw.x, tw.y, best.x, best.y);
-  if (kind === 'hero') hitHeroFrom(sim, best, towerDmgVsHero(best));
+  if (kind === 'hero') hitHeroFrom(sim, best, towerDmgVsHero(best, bd), true);   /* towers pierce armor */
   else if (kind === 'creep') hurtCreep(sim, best, towerDmgVsCreep(best), null);
   else {
     best.hp -= 110;                     /* buildings are sturdy targets now */
@@ -1618,9 +1652,12 @@ function resolveCollisions(sim) {
     buckets.get(k).push(i);
   });
   const nudge = (m, nx, ny) => { if (walkable(sim.world, nx, ny)) { m.u.x = nx; m.u.y = ny; } };
+  for (let pass = 0; pass < COLLIDE_PASSES; pass++)
   for (let i = 0; i < movers.length; i++) {
     const a = movers[i];
     const bi = Math.floor(a.u.x / CS), bj = Math.floor(a.u.y / CS);
+    /* buckets were built from pre-pass positions; a body only ever drifts a
+       few px per pass, so the 3x3 neighbourhood still covers every contact */
     for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
       const cell = buckets.get((bi + di + 1000) * 100000 + (bj + dj + 1000));
       if (!cell) continue;
@@ -1631,7 +1668,7 @@ function resolveCollisions(sim) {
         const dx = b.u.x - a.u.x, dy = b.u.y - a.u.y;
         const d = Math.hypot(dx, dy), min = a.r + b.r;
         if (d >= min) continue;
-        const push = (min - Math.max(d, 0.01)) * 0.3;
+        const push = (min - Math.max(d, 0.01)) * COLLIDE_PUSH;
         const nx = d > 0.01 ? dx / d : Math.cos(i * 2.4), ny = d > 0.01 ? dy / d : Math.sin(i * 2.4);
         nudge(a, a.u.x - nx * push, a.u.y - ny * push);
         nudge(b, b.u.x + nx * push, b.u.y + ny * push);
@@ -1652,7 +1689,13 @@ function resolveCollisions(sim) {
       const min = m.r + st.r;
       if (d >= min) continue;
       if (d < 0.01) { dx = 1; dy = 0; d = 1; }       /* dead-center? shove east */
-      nudge(m, st.x + (dx / d) * min, st.y + (dy / d) * min);
+      const ex = st.x + (dx / d) * min, ey = st.y + (dy / d) * min;
+      if (walkable(sim.world, ex, ey)) { m.u.x = ex; m.u.y = ey; continue; }
+      for (let k = 1; k <= 7; k++) {                 /* wall behind us? slide around the rim */
+        const a2 = Math.atan2(dy, dx) + k * (Math.PI / 4);
+        const sx = st.x + Math.cos(a2) * min, sy = st.y + Math.sin(a2) * min;
+        if (walkable(sim.world, sx, sy)) { m.u.x = sx; m.u.y = sy; break; }
+      }
     }
     if (!m.isHero) {                                 /* creeps & neutrals respect the keeps */
       for (const team of [0, 1]) {
@@ -1704,6 +1747,23 @@ function stepSim(sim) {
       if (f.kind === 'field' && f.team !== p.team && dist(p.x, p.y, f.x, f.y) <= f.r) applySlowHero(p, f.slow, 3);
     }
     const hdR = heroDef(p);
+    /* BACKSTEP — a ranged hero hit at knife range bolts free. It can't be
+       spammed: you must actually be getting hit, and it rests 8 s after. */
+    if (p.backstepCd > 0) p.backstepCd--;
+    if (hdR.range > 100 && sim.tick - (p.hurtAt || -999) <= 2 && !p.backstepCd) {
+      let pressed = false;
+      for (const e of creepsOf(sim, 1 - p.team)) {
+        if (dist(e.x, e.y, p.x, p.y) <= BACKSTEP_R) { pressed = true; break; }
+      }
+      if (!pressed) for (const q of oppHeroes(sim, p.team)) {
+        if (dist(q.x, q.y, p.x, p.y) <= BACKSTEP_R) { pressed = true; break; }
+      }
+      if (pressed) {
+        p.haste = Math.max(p.haste || 0, BACKSTEP_T);
+        p.backstepCd = BACKSTEP_CD;
+        addFx(sim, 'shield', p.x, p.y);
+      }
+    }
     const inCombat = sim.tick - (p.hurtAt || -999) <= REGEN_OOC;
     if (hdR.regen && p.hp < p.maxhp && !inCombat) p.hp = Math.min(p.maxhp, p.hp + p.maxhp * hdR.regen);
     const rest = hdR.range > 100 ? RANGED_REST : 1;   /* skirmishers recover quickest */
@@ -1847,6 +1907,9 @@ function stepSim(sim) {
   sim.impacts = sim.impacts.filter((im) => !im.done);
   sim.enemies = sim.enemies.filter((e) => e.hp > 0);
   sim.allies = sim.allies.filter((a) => a.hp > 0);
+
+  /* SOLID BODIES: nobody ends a tick standing inside anyone or anything */
+  resolveCollisions(sim);
 }
 
 function snapshot(sim) {
@@ -3262,6 +3325,8 @@ function createHost(ctx) {
         if (res === 'coins') ctx.sendTo(playerId, { k: 'toast', msg: 'Not enough coins! 🪙' });
         else if (res === 'fog') ctx.sendTo(playerId, { k: 'toast', msg: '🌫️ Unexplored! Walk a hero out there to scout it first' });
         else if (res === 'spot') ctx.sendTo(playerId, { k: 'toast', msg: "Can't build there — too close to a lane or building" });
+        else if (res === 'far') ctx.sendTo(playerId, { k: 'toast', msg: '📏 Too far! You can only build near your hero' });
+        else if (res === 'dead') ctx.sendTo(playerId, { k: 'toast', msg: "💀 You're down — no building until you respawn" });
         break;
       }
       case 'up': upgradeHero(sim, playerId, data.what); break;
@@ -3561,7 +3626,7 @@ function createController(ctx) {
     const me = myRow(cur.snap);
     const hx = me ? me[2] : 0, hy = me ? me[3] : 0;
     placing.x = hx; placing.y = hy + 90;
-    outer: for (let r = 90; r <= 600; r += 60) {
+    outer: for (let r = 90; r <= BUILD_R; r += 50) {
       for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
         const x = hx + Math.cos(a) * r, y = hy + Math.sin(a) * r;
         if (canPlace(world, cur.snap.b, x, y, fog)) { placing.x = x; placing.y = y; break outer; }
@@ -3616,7 +3681,10 @@ function createController(ctx) {
     $q('.gg-shopbtn').classList.toggle('gg-shopbtn-on', mode === 'panel');
 
     if (mode === 'panel' && !mapCam) {
-      mapCam = { x: 0, y: 0, z: fitZoom(canvas.width, canvas.height) };
+      const me0 = cur && myRow(cur.snap);
+      mapCam = me0
+        ? { x: me0[2], y: me0[3], z: Math.min(1.1, fitZoom(canvas.width, canvas.height) * 3) }
+        : { x: 0, y: 0, z: fitZoom(canvas.width, canvas.height) };
     }
     if (mode === 'panel' && !placing) { updateHud.sig = null; renderTabs(); }
     if (mode === 'over') showOver(snap);
@@ -3630,9 +3698,10 @@ function createController(ctx) {
     $q('.gg-prep').classList.add('hidden');
     const me = myRow(snap);
     const won = me && me[19] === snap.over;
-    el.innerHTML = won
+    const hint = '<p class="gg-over-hint">Party host: tap <b>⌂ End game</b> at the top to send everyone back to the menu.</p>';
+    el.innerHTML = (won
       ? `<h1>🏆</h1><p>VICTORY for the ${TEAM_NAME[snap.over]}!</p>`
-      : `<h1>💔</h1><p>The ${TEAM_NAME[snap.over]} won this one.<br>Watch the big screen!</p>`;
+      : `<h1>💔</h1><p>The ${TEAM_NAME[snap.over]} won this one.<br>Watch the big screen!</p>`) + hint;
   }
 
   function toast(msg) {
@@ -3749,10 +3818,12 @@ function createController(ctx) {
       }).join('') + (disc < 1 ? `<p class="gg-empty"><small>🔧 Greta's discount applied!</small></p>` : '');
       for (const b of body.querySelectorAll('[data-build]')) {
         b.addEventListener('click', () => {
+          const me1 = cur && myRow(cur.snap);
+          if (me1 && me1[6] > 0) { toast("💀 You're down — no building until you respawn"); return; }
           placing = { type: b.dataset.build };
           autoAim();
           syncMode(true);
-          toast('Tap the map to move the ghost — Place when it turns green!');
+          toast('Tap inside your hero\'s ring to aim — Place when it turns green!');
         });
       }
     }
@@ -3791,7 +3862,19 @@ function createController(ctx) {
     /* tower ghost while placing */
     if (placing && placing.x !== undefined) {
       const def = BLD[placing.type];
-      const ok = canPlace(world, snap.b, placing.x, placing.y, fog);
+      const me0 = myRow(snap);
+      const down = !me0 || me0[6] > 0;
+      const inReach = !!me0 && Math.hypot(placing.x - me0[2], placing.y - me0[3]) <= BUILD_R;
+      const ok = !down && inReach && canPlace(world, snap.b, placing.x, placing.y, fog);
+      if (me0) {                                        /* show the reach you're working in */
+        g.save(); g.translate(me0[2], me0[3]);
+        g.strokeStyle = down ? 'rgba(255,77,109,.75)' : inReach ? 'rgba(107,207,127,.8)' : 'rgba(255,217,61,.85)';
+        g.lineWidth = 5;
+        g.setLineDash([22, 16]); g.lineDashOffset = -(now * 0.02) % 38;
+        g.beginPath(); g.arc(0, 0, BUILD_R, 0, Math.PI * 2); g.stroke();
+        g.setLineDash([]);
+        g.restore();
+      }
       g.save(); g.translate(placing.x, placing.y);
       g.globalAlpha = 0.75;
       if (def.range) {
@@ -3849,11 +3932,13 @@ export const __sim = {
   makeSim, addPlayer, pickHero, stepSim, build, canPlace, buildWorld,
   upgradeBld, upgradeHero, sellBld, castAbility, snapshot, walkable,
   hurtCreep, hurtNeutral, hurtTower, hurtBase, hurtETower, hurtHorde, addXp,
-  makeComp, spawnCreep, spawnGroups, spawnAIHero, creepsOf, towersOf, baseOf, stepBld, stepCreep, stepTower, heroesOfTeam, pvpHit, oppHeroes,
+  makeComp, spawnCreep, spawnGroups, creepsOf, towersOf, baseOf, stepBld, stepCreep, stepTower, heroesOfTeam, pvpHit, oppHeroes,
   addBot, balanceTeams, stepBot, baseShielded,
   HEROES, BLD, CLASSES, ETYPES, ATYPES, NTYPES, ETOWER, CASTLE, HORDE,
   E_SKIN, A_SKIN, BASE_RING, BASE_ZONE, TEAM_NAME, WORLD_W, WORLD_H,
   WALK_COLS, WALK_ROWS, WALK_CELL, SPAWN_EVERY, GROUP_SIZE, XP_LVL, LVL_MAX, SPRING_R, SPRING_HEAL, N_SPRINGS,
+  BUILD_R, ARMOR_MIT, ARMOR_MAX_T, CAPTURE_HP, killHero, hitHeroFrom,
+  TOWER_NEAR, TOWER_FAR_MUL, BACKSTEP_R, BACKSTEP_CD, speedOf,
   resolveCollisions, towerDmgVsHero, towerDmgVsCreep,
   revealCircle, fogIdx,
 };
