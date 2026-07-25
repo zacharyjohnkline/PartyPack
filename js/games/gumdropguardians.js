@@ -285,12 +285,6 @@ const WALL = {
   perLvl: 2,                       // +2 bricks per upgrade → 10 at level 5
   bend: Math.PI / 4,               // sharpest turn between neighbouring bricks
   lure: 210,                       // creeps that bump it decide to chew it
-  /* ESCAPE HATCH. The no-crossing rule is deliberate, but it can strand you:
-     climb your own wall where the friendly side happens to back onto a rock
-     ridge and there is nowhere legal left to stand. So a hero who shoves
-     against something for this long is allowed to squeeze through their OWN
-     brickwork — never the enemy's, and never through a mountain. */
-  escapeT: 8,                      // 0.8 s of getting nowhere
 };
 
 /* gummy fighters trained by barracks — no longer chihuahuas */
@@ -356,8 +350,14 @@ const TEAM_EMOJI = ['🍬', '👹'];
 
 /* AI teammates/opponents — real players with a robot brain: they level,
    shop, build, cast, retreat, and respawn under exactly the same rules */
-const BOT_NAMES = ['Robo Rollo', 'Auto Aggie', 'Circuit Cindy', 'Gear-o Greg', 'Beep-Beep Bonnie', 'Sprocket Sam', 'Motor Mabel', 'Widget Wally'];
-const BOT_COLORS = ['#9aa5b1', '#b58fd6', '#7fc8a9', '#e0a76f', '#d98fb0', '#8fb7e0', '#c9c46a', '#a08fe0'];
+/* twelve of each: a 6v6 with a single human at the table needs eleven robots,
+   and two teammates called Robo Rollo helps nobody */
+const BOT_NAMES = ['Robo Rollo', 'Auto Aggie', 'Circuit Cindy', 'Gear-o Greg', 'Beep-Beep Bonnie', 'Sprocket Sam',
+                   'Motor Mabel', 'Widget Wally', 'Servo Sadie', 'Bolt Barney', 'Piston Pia', 'Clanky Cliff'];
+const BOT_COLORS = ['#9aa5b1', '#b58fd6', '#7fc8a9', '#e0a76f', '#d98fb0', '#8fb7e0',
+                    '#c9c46a', '#a08fe0', '#6fbfc9', '#d0846f', '#8fd67f', '#c98fa0'];
+const TEAM_SIZE_MAX = 6;           // 6v6 is the ceiling
+const TEAM_SIZE_DEFAULT = 3;
 
 /* neutral creep camps — clear them for XP and coins; they respawn */
 const NTYPES = {
@@ -427,10 +427,14 @@ function buildWorld(seed) {
     return pts;
   }
   /* each lane is a list of corner-ish control points, joined by wiggly legs */
+  /* the outer roads used to bend to +/-980 and, with up to 180 px of sway on
+     top, could graze the world boundary itself — a hard wall units scrape
+     along. Pulled in to 930 so even a fully swayed lane keeps ~95 px of air
+     between it and the edge of the map. */
   const ctrls = [
-    [H, { x: 300, y: -980 }, { x: 1780, y: -880 }, { x: 1800, y: 120 }, C],     // high road
+    [H, { x: 300, y: -930 }, { x: 1780, y: -845 }, { x: 1800, y: 120 }, C],     // high road
     [H, C],                                                                      // mid road
-    [H, { x: -1800, y: -120 }, { x: -1780, y: 880 }, { x: -300, y: 980 }, C],   // low road
+    [H, { x: -1800, y: -120 }, { x: -1780, y: 845 }, { x: -300, y: 930 }, C],   // low road
   ];
   for (const c of ctrls) {
     const pts = [{ x: H.x, y: H.y }];
@@ -581,6 +585,35 @@ function buildWorld(seed) {
     claim((rnd() * 2 - 1) * (WORLD_W - 150), (rnd() * 2 - 1) * (WORLD_H - 150), rnd() < 0.8 ? 'tree' : 'rock');
   }
 
+  /* --- LANES ARE SACRED ---
+     Two things were nibbling at the roads. The rim tree-wall claims the
+     outermost rows outright without consulting cellOk, so where the high
+     road swings up near the top of the world it ran straight into it and a
+     column of creeps would jam. And cellOk only ever measured a cell's
+     CENTRE — a 100 px cell whose middle sits 118 px off the lane still
+     reaches to within 47 px of it, so thickets were poking into every road
+     on the map.
+
+     Fix both at once, and measure the CORNERS: any obstacle cell with any
+     part of itself inside LANE_CLEAR of a lane comes out, rim wall included.
+     That guarantees a genuinely walkable corridor of LANE_CLEAR either side
+     of every centre line, on every seed. It notches the rim where a lane
+     hugs it — exactly where units were always going to walk anyway. */
+  const LANE_CLEAR = 88;
+  const HALF = WALK_CELL / 2;
+  const REACH = LANE_CLEAR + Math.hypot(HALF, HALF) + 2;   /* cell can't matter beyond this */
+  const nearLane = (o) => {
+    /* cheap reject first: one measurement rules out almost every cell */
+    if (!paths.some((pp) => distToPath(pp, o.x, o.y) <= REACH)) return false;
+    /* then walk the cell on a fine grid, so no corner or edge sneaks in */
+    for (let a = -3; a <= 3; a++) for (let b = -3; b <= 3; b++) {
+      const px = o.x + (a / 3) * HALF, py = o.y + (b / 3) * HALF;
+      if (paths.some((pp) => distToPath(pp, px, py) <= LANE_CLEAR)) return true;
+    }
+    return false;
+  };
+  for (let k = obstacles.length - 1; k >= 0; k--) if (nearLane(obstacles[k])) obstacles.splice(k, 1);
+
   /* walkability grid + guarantee that nothing is sealed off:
      flood-fill from the castle, then bulldoze a straight line
      from any cut-off pocket back toward home */
@@ -709,35 +742,59 @@ function wallBlocksLine(sim, x1, y1, x2, y2) {
   return false;
 }
 
-/* Can this MOVER occupy (x,y)? Ground troops are stopped by any brick.
-   A ranged hero is the exception: they may stand on the parapet, but only
-   ever entering — and leaving — on the side their own base is on. */
+/* the first brick covering this point that would BLOCK a unit of `team`.
+   Your own ramparts are not obstacles to you — your side files straight
+   through its own gates, while the enemy has to knock them down first. */
+function foeWallAt(sim, team, x, y, pad = 0) {
+  for (const w of sim.blds) {
+    if (w.type !== 'wall' || !w.segs || w.team === team) continue;
+    for (const seg of w.segs) if (segHit(seg, x, y, pad)) return { wall: w, seg };
+  }
+  return null;
+}
+
+/* the same ray test, but only counting walls that would actually stop this
+   team — used for pathing questions, NOT for tower sight lines (a tower is
+   blinded by any wall, including its own, which is the trade-off of raising
+   one in front of your own guns) */
+function foeWallBlocks(sim, team, x1, y1, x2, y2) {
+  const len = Math.hypot(x2 - x1, y2 - y1);
+  if (len < 1) return false;
+  const steps = Math.min(28, Math.ceil(len / 16));
+  for (let k = 1; k < steps; k++) {
+    const t = k / steps;
+    if (foeWallAt(sim, team, x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, 0)) return true;
+  }
+  return false;
+}
+
+/* Can this MOVER occupy (x,y)?
+   A wall is solid only to the side that did NOT build it. Your own troops
+   and heroes pass through your own wall as if it were a gate — it is there
+   to stop THEM, not you. An enemy rampart stops ground troops dead, and the
+   only way through is to break it.
+   A ranged hero is the exception: they may climb an enemy wall from the side
+   their own base is on and shoot over the top, but never step down behind it. */
 function wallPasses(sim, u, x, y, pad) {
-  const hit = wallAt(sim, x, y, pad);
-  const onNow = u.__onWall || null;          /* the brick we are standing on, if any */
+  const hit = foeWallAt(sim, u.team, x, y, pad);
+  const onNow = u.__onWall || null;          /* an enemy brick we are perched on */
   if (!hit) {
-    /* stepping OFF a brick: only ever back down the friendly side — unless
-       we are well and truly wedged, in which case any way out will do */
+    /* stepping OFF a brick: only ever back down the friendly side */
     if (onNow) {
-      if (u.__escape) return true;
       const home = baseOf(u.team);
       return wallSide(onNow, x, y) === wallSide(onNow, home.x, home.y);
     }
     return true;
   }
   if (!u.__climber) {
-    /* wedged between a rock and your OWN wall? go through it. The enemy's
-       rampart is a problem you solve with a hammer, not by leaning on it. */
-    if (u.__escape && hit.wall.team === u.team) return true;
-    /* A wall raised on top of somebody must not entomb them. If they are
-       ALREADY inside a brick, every step is legal until they are clear. */
-    return !!wallAt(sim, u.x, u.y, 0);
+    /* An enemy wall raised on top of somebody must not entomb them. If they
+       are ALREADY inside a brick, every step is legal until they are clear. */
+    return !!foeWallAt(sim, u.team, u.x, u.y, 0);
   }
   if (onNow) return true;                            /* already up there — walk the top */
-  if (u.__escape && hit.wall.team === u.team) return true;
-  /* mount only from the side your own keep is on — and note this applies to
-     the ENEMY's wall too: you may scale it and shoot over, but the far side
-     stays out of reach, which is the whole point of them building it */
+  /* mount only from the side your own keep is on: you may scale the enemy's
+     rampart and shoot over it, but the far side stays out of reach, which is
+     the whole point of them having built it */
   const home = baseOf(u.team);
   return wallSide(hit.seg, u.x, u.y) === wallSide(hit.seg, home.x, home.y);
 }
@@ -839,7 +896,7 @@ const baseOf = (team) => (team === 0 ? { x: CASTLE.x, y: CASTLE.y, r: CASTLE.r }
 function makeSim(seed) {
   const sim = {
     seed,
-    tick: 0, phase: 'pick', pickLeft: PICK_FAILSAFE,
+    tick: 0, phase: 'pick', pickLeft: PICK_FAILSAFE, teamSize: TEAM_SIZE_DEFAULT,
     nextId: 1,
     world: buildWorld(seed),
     castle: { hp: CASTLE.hp, max: CASTLE.hp, hitAt: -999 },
@@ -953,15 +1010,22 @@ function addBot(sim, team) {
   return p;
 }
 
-/* uneven sides? robots fill every empty chair until the teams match */
+/* Robots fill every empty chair up to the size the HOST asked for — 1v1 all
+   the way to 6v6. Sides always come out even, and nobody is ever turned away:
+   if more humans crowded onto one side than the chosen size, the other side
+   is topped up to match them instead. */
 function balanceTeams(sim) {
   const count = [0, 0];
   for (const p of sim.players.values()) if (p.hero) count[p.team]++;
-  while (count[0] !== count[1]) {
-    const short = count[0] < count[1] ? 0 : 1;
-    addBot(sim, short);
-    count[short]++;
-  }
+  const want = clamp(Math.max(sim.teamSize || TEAM_SIZE_DEFAULT, count[0], count[1]), 1, TEAM_SIZE_MAX);
+  for (const t of [0, 1]) while (count[t] < want) { addBot(sim, t); count[t]++; }
+}
+/* how many robots a given size would need right now — for the host's readout */
+function botsNeeded(sim, size) {
+  const count = [0, 0];
+  for (const p of sim.players.values()) if (p.hero && !p.bot) count[p.team]++;
+  const want = clamp(Math.max(size, count[0], count[1]), 1, TEAM_SIZE_MAX);
+  return (want - count[0]) + (want - count[1]);
 }
 
 function startPlay(sim) {
@@ -1476,7 +1540,7 @@ function castAbility(sim, playerId, i, hint) {
       for (let hop = 210; hop >= 50; hop -= 40) {
         const nx = clamp(p.x + f.x * hop, -WORLD_W, WORLD_W);
         const ny = clamp(p.y + f.y * hop, -WORLD_H, WORLD_H);
-        if (walkable(sim.world, nx, ny) && !wallAt(sim, nx, ny, 8)) { p.x = nx; p.y = ny; break; }
+        if (walkable(sim.world, nx, ny) && !foeWallAt(sim, p.team, nx, ny, 8)) { p.x = nx; p.y = ny; break; }
       }
       addFx(sim, 'bash', p.x, p.y, undefined, undefined, 130);
       for (const e of foes) if (dist(e.x, e.y, p.x, p.y) <= 130) {
@@ -1559,7 +1623,7 @@ function castAbility(sim, playerId, i, hint) {
       for (let hop = 260; hop >= 60; hop -= 40) {   /* land on the farthest walkable spot */
         const nx = clamp(p.x + f.x * hop, -WORLD_W, WORLD_W);
         const ny = clamp(p.y + f.y * hop, -WORLD_H, WORLD_H);
-        if (walkable(sim.world, nx, ny) && !wallAt(sim, nx, ny, 8)) { p.x = nx; p.y = ny; break; }
+        if (walkable(sim.world, nx, ny) && !foeWallAt(sim, p.team, nx, ny, 8)) { p.x = nx; p.y = ny; break; }
       }
       addFx(sim, 'boom', p.x, p.y, undefined, undefined, 110);
       for (const e of foes) if (dist(e.x, e.y, p.x, p.y) <= 110) hurtCreep(sim, e, Math.round(30 * pm), p.id);
@@ -1958,8 +2022,8 @@ function stepBot(sim, p) {
       const a = a0 + (k * Math.PI) / 4;
       const jx = p.x + Math.cos(a) * 150, jy = p.y + Math.sin(a) * 150;
       if (!walkable(sim.world, jx, jy)) continue;
-      if (wallAt(sim, jx, jy, 16)) continue;                  /* don't aim INTO bricks */
-      if (wallBlocksLine(sim, p.x, p.y, jx, jy)) continue;    /* nor through them */
+      if (foeWallAt(sim, p.team, jx, jy, 16)) continue;       /* don't aim INTO their bricks */
+      if (foeWallBlocks(sim, p.team, p.x, p.y, jx, jy)) continue;  /* nor through them */
       p.moveTo = { x: jx, y: jy }; p.botWp = null; p.stuckT = 0; return;
     }
   }
@@ -2506,12 +2570,9 @@ function stepSim(sim) {
        shoot over it. Melee heroes cannot, and nobody crosses to the far
        side — wallPasses() enforces both, it just needs telling who is who. */
     p.__climber = hdR.range > 100;
-    const perch = p.__climber ? wallAt(sim, p.x, p.y, 0) : null;
+    const perch = p.__climber ? foeWallAt(sim, p.team, p.x, p.y, 0) : null;
     p.__onWall = perch ? perch.seg : null;
     p.onWall = p.__onWall ? 1 : 0;
-    /* armed by LAST tick's shoving: if we have been leaning on something and
-       getting nowhere, this tick we are allowed through our own brickwork */
-    p.__escape = (p.stuckT || 0) >= WALL.escapeT;
     const wasX = p.x, wasY = p.y;
     const pushing = !!(p.dir.x || p.dir.y || p.moveTo);
     if (p.dir.x || p.dir.y) {
@@ -2527,7 +2588,8 @@ function stepSim(sim) {
         slideMove(sim, p, p.x + ((p.moveTo.x - p.x) / d) * spd, p.y + ((p.moveTo.y - p.y) / d) * spd, hdR.r * 0.6);
       }
     }
-    /* did that actually get us anywhere? */
+    /* did that actually get us anywhere? the robots read this to route around
+       whatever is in their way (see stepBot) */
     if (pushing && dist(p.x, p.y, wasX, wasY) < spd * 0.3) p.stuckT = (p.stuckT || 0) + 1;
     else p.stuckT = 0;
     p.x = clamp(p.x, -WORLD_W, WORLD_W);
@@ -2712,6 +2774,7 @@ function snapshot(sim) {
   const snap = {
     k: 'snap', n: sim.tick, ph: sim.phase,
     pt: sim.phase === 'pick' ? sim.pickLeft : 0,
+    ts: sim.teamSize, tsBots: botsNeeded(sim, sim.teamSize),
     clock: Math.floor(sim.tick / 10),
     c: [Math.round(sim.castle.hp), sim.castle.max],
     hb: [Math.round(sim.horde.hp), sim.horde.max],
@@ -3929,6 +3992,11 @@ const HOST_HTML = `
   <div class="gg-banner hidden"></div>
   <div class="gg-pickview hidden">
     <h2>Choose your hero on your phone!</h2>
+    <div class="gg-sizebar">
+      <span class="gg-sizelabel">Team size</span>
+      <div class="gg-sizebtns"></div>
+      <span class="gg-sizenote"></span>
+    </div>
     <div class="gg-pickgrid"></div>
   </div>
   <div class="gg-over hidden"></div>
@@ -4036,6 +4104,22 @@ function createHost(ctx) {
   }
 
   function renderPickView() {
+    /* HOST PICKS THE TEAM SIZE. Robots fill whatever the humans don't.
+       Clicked straight on the sim — the host owns it, nothing to send. */
+    const sizeWrap = ctx.root.querySelector('.gg-sizebtns');
+    sizeWrap.innerHTML = '';
+    for (let n = 1; n <= TEAM_SIZE_MAX; n++) {
+      const b = document.createElement('button');
+      b.className = 'gg-sizebtn';
+      b.dataset.size = String(n);
+      b.textContent = `${n}v${n}`;
+      b.addEventListener('click', () => {
+        if (!sim || sim.phase !== 'pick') return;
+        sim.teamSize = n;
+        paintSizes();
+      });
+      sizeWrap.appendChild(b);
+    }
     const grid = ctx.root.querySelector('.gg-pickgrid');
     grid.innerHTML = HEROES.map((h) => `
       <div class="gg-pickcard" data-hero="${h.id}">
@@ -4051,6 +4135,7 @@ function createHost(ctx) {
     const st = seats();
 
     /* pick phase overlay */
+    if (snap.ph === 'pick') paintSizes(snap);
     const pickEl = $q('.gg-pickview');
     if (snap.ph === 'pick') {
       pickEl.classList.remove('hidden');
@@ -4122,6 +4207,21 @@ function createHost(ctx) {
 
     /* game over */
     if (snap.over !== undefined) showOver(snap);
+  }
+
+  /* highlight the chosen size and spell out what it means in robots */
+  function paintSizes(snap) {
+    const size = snap ? snap.ts : (sim ? sim.teamSize : TEAM_SIZE_DEFAULT);
+    const bots = snap ? snap.tsBots : (sim ? botsNeeded(sim, sim.teamSize) : 0);
+    for (const b of ctx.root.querySelectorAll('.gg-sizebtn')) {
+      b.classList.toggle('gg-sizebtn-on', +b.dataset.size === size);
+    }
+    const note = ctx.root.querySelector('.gg-sizenote');
+    if (note) {
+      note.textContent = bots > 0
+        ? `🤖 ${bots} robot${bots === 1 ? '' : 's'} will fill the empty chairs`
+        : 'every chair taken by a person';
+    }
   }
 
   function showOver(snap) {
@@ -4608,6 +4708,21 @@ function createController(ctx) {
     requestAnimationFrame(onResize);
   }
 
+  /* highlight the chosen size and spell out what it means in robots */
+  function paintSizes(snap) {
+    const size = snap ? snap.ts : (sim ? sim.teamSize : TEAM_SIZE_DEFAULT);
+    const bots = snap ? snap.tsBots : (sim ? botsNeeded(sim, sim.teamSize) : 0);
+    for (const b of ctx.root.querySelectorAll('.gg-sizebtn')) {
+      b.classList.toggle('gg-sizebtn-on', +b.dataset.size === size);
+    }
+    const note = ctx.root.querySelector('.gg-sizenote');
+    if (note) {
+      note.textContent = bots > 0
+        ? `🤖 ${bots} robot${bots === 1 ? '' : 's'} will fill the empty chairs`
+        : 'every chair taken by a person';
+    }
+  }
+
   function showOver(snap) {
     const el = $q('.gg-cover');
     el.classList.remove('hidden');
@@ -4959,7 +5074,8 @@ export const __sim = {
   upgradeBld, upgradeHero, sellBld, castAbility, snapshot, walkable,
   hurtCreep, hurtNeutral, hurtTower, hurtBase, hurtETower, hurtHorde, hurtBld, addXp,
   makeComp, spawnCreep, spawnGroups, creepsOf, towersOf, baseOf, stepBld, stepCreep, stepTower, heroesOfTeam, pvpHit, oppHeroes,
-  addBot, balanceTeams, stepBot, baseShielded,
+  addBot, balanceTeams, botsNeeded, stepBot, baseShielded,
+  TEAM_SIZE_MAX, TEAM_SIZE_DEFAULT,
   HEROES, BLD, CLASSES, ETYPES, ATYPES, NTYPES, ETOWER, CASTLE, HORDE,
   E_SKIN, A_SKIN, BASE_RING, BASE_ZONE, TEAM_NAME, WORLD_W, WORLD_H,
   WALK_COLS, WALK_ROWS, WALK_CELL, SPAWN_EVERY, GROUP_SIZE, LANE_SIZE, LANE_CAP, XP_LVL, LVL_MAX, SPRING_R, SPRING_HEAL, N_SPRINGS,
@@ -4971,7 +5087,7 @@ export const __sim = {
   WALL, BTYPE, BUILDABLE, MAX_BLD, SELL_BACK, GLAZE_MUL, N_PATHS,
   hupCost, bupCost, HUP_MAX, RESPAWN_T, LASTHIT_COIN, ASSIST_COIN,
   FOUNTAIN_R, FOUNTAIN_HEAL, FOUNTAIN_FIGHT_T, FOUNTAIN_FIGHT_MUL,
-  wallAt, wallSide, segHit, wallBlocksLine, wallPasses, nearestSeg, allSegs,
+  wallAt, foeWallAt, wallSide, segHit, wallBlocksLine, foeWallBlocks, wallPasses, nearestSeg, allSegs,
   growWall, setFocus, resolveFocus, myBuildings, bldPaid, laneMuster,
   spawnGummySquad, GUMMY, slideMove, facingOf, onOwnFountain,
 };

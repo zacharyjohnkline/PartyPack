@@ -39,11 +39,33 @@
   font-size: 0.8rem; font-weight: 700; text-shadow: 0 1px 2px #000;
 }
 
+/* the host's team-size picker, on the hero-select screen */
+.gg-sizebar {
+  display: flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; gap: 10px 14px; margin: 0 0 18px;
+}
+.gg-sizelabel { font-weight: 800; font-size: 1.05rem; opacity: 0.85; }
+.gg-sizebtns { display: flex; gap: 8px; flex-wrap: wrap; }
+.gg-sizebtn {
+  font-family: inherit; font-weight: 800; font-size: 1rem;
+  padding: 8px 16px; border-radius: 12px; cursor: pointer;
+  border: 3px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.08); color: #fff;
+  transition: transform 0.1s, border-color 0.12s, background 0.12s;
+}
+.gg-sizebtn:hover { border-color: rgba(255, 255, 255, 0.55); }
+.gg-sizebtn:active { transform: scale(0.95); }
+.gg-sizebtn-on {
+  border-color: #ffd93d; background: rgba(255, 217, 61, 0.28); color: #fff;
+}
+.gg-sizenote { font-size: 0.9rem; opacity: 0.75; }
+
 .gg-roster {
   /* a tidy column down the left edge — it used to sprawl across the bottom
      of the map and cover the lanes once a few players joined */
   position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
   display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+  flex-wrap: wrap;                    /* 6v6 = 12 chips: spill into a 2nd column */
   z-index: 5; max-height: 88vh; pointer-events: none;
 }
 .gg-chip {

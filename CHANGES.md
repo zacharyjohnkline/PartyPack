@@ -268,3 +268,71 @@ feedback feels broken.
 Tests are at **152**, adding the press-carries-its-own-aim case, the stale
 `lastDir` case that used to fire backwards, tapped-target steering, and the
 precedence between them.
+
+---
+
+# Follow-up: lanes, friendly walls, team size
+
+## 1. The top road ran through the trees
+
+Two things were eating the roads, and the second one had been there all along.
+
+The rim tree-wall — the unbroken ring of trees that stops anyone sneaking
+around the edge of the map — claims the outermost grid rows outright, without
+consulting the rule that keeps obstacles clear of lanes. Where the high road
+swung up near the top of the world it ran straight into that wall.
+
+Underneath that, the clearance rule only ever measured a cell's **centre**. A
+100 px cell whose middle sits 118 px off a lane still reaches to within 47 px
+of it, so thickets had been poking into *every* road on the map since the
+beginning.
+
+Both fixed: obstacle cells are now measured on a fine grid across the whole
+cell, and anything with any part of itself inside 88 px of a lane is removed —
+rim wall included. The outer lanes were also pulled in from ±980 to ±930 so a
+fully swayed lane keeps ~95 px of air between it and the hard edge of the map.
+
+Measured over 100 seeds: **zero obstacles anywhere in a ±80 px corridor along
+any lane**, down from up to 155 blocked samples. In live matches, creeps that
+stall near spawn went from **25 / 11 / 0** per lane to **0 / 0 / 0**, and
+average lane progress rose on all three roads.
+
+## 2. Walls are your gate and their barricade
+
+A wall is now solid **only to the side that did not build it**. Your creeps,
+your gummies and your heroes file straight through your own brickwork; the
+enemy has to break it down. Their wall still stops your ground troops cold,
+and a ranged hero can still scale an enemy wall from the side facing their own
+keep and shoot over it — but never step down behind it.
+
+This retires the escape hatch from the last round. It existed for exactly one
+situation, being wedged between a rock and your own wall, which can no longer
+happen. Worth removing on its own merits too: while it was in, a hero who got
+deliberately stuck could squeeze through the **enemy's** wall, which is the one
+thing it must never allow.
+
+One deliberate asymmetry kept: **sight lines are still blocked for everybody**,
+including your own towers. Raising a wall in front of your own guns blinds
+them. That was in your original spec and it is what stops a wall from being a
+free upgrade.
+
+## 3. The host sets the table
+
+A **team size picker** now sits on the hero-select screen: 1v1 through 6v6.
+Robots fill whatever the humans don't, and the readout underneath says how
+many will be joining before you commit.
+
+- Default is **3v3**, so two kids at the table get a full-feeling match.
+- Nobody is ever turned away. If more people crowd onto one side than the size
+  you picked, the other side is topped up to match them instead of anyone
+  being dropped.
+- Set it **during hero select** — the match starts the moment the last player
+  locks in a hero.
+- The robot roster grew from 8 names to 12, because a 6v6 with a single human
+  needs eleven of them and two teammates called Robo Rollo helps nobody.
+
+A full 6v6 runs clean: twelve players, 3.9 ms per tick against a 100 ms budget,
+11 KB snapshots. The roster column on the host screen now wraps into a second
+column rather than running off the bottom.
+
+Tests are at **172**.

@@ -130,8 +130,12 @@ own LIVING hero, so fortifying means physically walking somewhere and holding
 it. Tap any building in the 🏗️ list and the map flies to it and rings it, so
 you never have to guess which of six turrets you are about to upgrade.
 
-Teams always come out EQUAL: if the sides are uneven (3v1, or a lone player
-vs nobody), robot players — Robo Rollo, Auto Aggie, Circuit Cindy and friends —
+THE HOST SETS THE TEAM SIZE on the hero-select screen — anything from 1v1 up
+to 6v6, defaulting to 3v3 — and robots fill every chair the humans don't. Set
+it while people are choosing heroes, because the match starts the moment the
+last player locks in. Nobody is ever turned away: if more people crowd onto
+one side than the size you picked, the other side is topped up to match them.
+Teams always come out EQUAL, and robot players — Robo Rollo, Auto Aggie, Circuit Cindy and friends —
 fill the empty chairs the moment the match starts. Bots are real players
 under identical rules: they pick a hero from their side's roster, earn coins
 and XP, buy and upgrade the same gear, cast abilities on the same cooldowns,
@@ -146,7 +150,9 @@ cap, buy a barracks once their siege kit is down, and park mortars outside a
 tower's reach to shell it down for free.
 
 The wilds are a proper FOREST: hundreds of tree thickets and rock ridges
-carve real routes between the lanes, and the entire map rim is tree-walled.
+carve real routes between the lanes, and the entire map rim is tree-walled —
+except that LANES ARE SACRED. Nothing may stand within 88 px of a road, rim
+wall included, so no lane can ever be pinched shut by the terrain.
 Eight neutral camps (Taffy Wolves, Brittle Bears, the Elder Rockjaw) pay
 coins and hero XP, and four pink SODA SPRINGS — mirrored so neither side gets
 a closer drink — heal any hero who wades in, either team. Melee heroes
@@ -177,7 +183,7 @@ will steer a charge or a leap if the stick is idle.
 Two headless suites, no browser needed:
 
 ```bash
-node test-gg.mjs      # 152 rules checks: waves, economy, walls, fountain, targeting
+node test-gg.mjs      # 172 rules checks: waves, economy, walls, fountain, targeting
 node stress-gg.mjs    # walls thrown across live lanes, long matches, tick budget
 ```
 
