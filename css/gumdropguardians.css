@@ -40,20 +40,28 @@
 }
 
 .gg-roster {
-  position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
-  display: flex; gap: 10px; flex-wrap: wrap; justify-content: center;
-  z-index: 5; max-width: 94vw;
+  /* a tidy column down the left edge — it used to sprawl across the bottom
+     of the map and cover the lanes once a few players joined */
+  position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+  z-index: 5; max-height: 88vh; pointer-events: none;
 }
 .gg-chip {
-  display: flex; align-items: center; gap: 8px;
-  background: rgba(30, 40, 30, 0.78);
-  border: 3px solid #fff; border-radius: 999px;
-  padding: 6px 14px; color: #fff;
+  display: flex; align-items: center; gap: 9px;
+  background: rgba(30, 40, 30, 0.72);
+  border: 3px solid #fff; border-radius: 16px;
+  padding: 5px 14px 5px 9px; color: #fff;
+  min-width: 170px;
+  backdrop-filter: blur(3px);
 }
 .gg-chip-off { opacity: 0.45; }
-.gg-chip-hero { font-size: 1.3rem; }
-.gg-chip-name { font-weight: 700; }
-.gg-chip-meta { font-size: 0.85rem; opacity: 0.9; }
+.gg-chip-hero { font-size: 1.3rem; flex: 0 0 auto; }
+.gg-chip-text { display: flex; flex-direction: column; line-height: 1.16; min-width: 0; }
+.gg-chip-name {
+  font-weight: 700; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; max-width: 190px;
+}
+.gg-chip-meta { font-size: 0.78rem; opacity: 0.88; white-space: nowrap; }
 
 .gg-banner {
   position: absolute; top: 18%; left: 50%; transform: translateX(-50%);

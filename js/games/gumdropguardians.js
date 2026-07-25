@@ -1361,10 +1361,106 @@ function stepCreep(sim, u) {
   if (d > 1) { u.x += ((wp.x - u.x) / d) * spd; u.y += ((wp.y - u.y) / d) * spd; }
 }
 
-/* ---------------- the robot brain: shop, build, cast, push, retreat ---------------- */
+/* ---------------- the robot brain: shop, build, cast, push, retreat ----------------
+   Split in two: a SAFETY layer that runs every single tick (because dying
+   takes well under a second once a tower has your range), and a strategy
+   layer that thinks once a second. */
+
+/* the ability each hero reaches for when things go wrong */
+const PANIC_ABILITY = { knight: 2, builder: 2, ranger: 1, mage: 2,
+                        slasher: 2, tinker: 1, whip: 2, shaman: 2 };
+
+/* where should a hurt bot run to? nearest healing water that isn't toward
+   the thing that's hurting it */
+function safeHaven(sim, p) {
+  const home = baseOf(p.team);
+  const spots = [{ x: home.x - Math.sign(home.x) * (home.r + 90), y: home.y - Math.sign(home.y) * (home.r + 90) }];
+  for (const sp of sim.world.springs) spots.push(sp);
+  let threatX = null, threatY = null, td = Infinity;
+  for (const q of oppHeroes(sim, p.team)) { const d = dist(q.x, q.y, p.x, p.y); if (d < td) { td = d; threatX = q.x; threatY = q.y; } }
+  for (const tw of towersOf(sim, 1 - p.team)) { const d = dist(tw.x, tw.y, p.x, p.y); if (d < td) { td = d; threatX = tw.x; threatY = tw.y; } }
+  let best = spots[0], bestScore = -Infinity;
+  for (const sp of spots) {
+    const mine = dist(p.x, p.y, sp.x, sp.y);
+    const away = threatX === null ? 0 : dist(sp.x, sp.y, threatX, threatY);
+    const score = away * 0.8 - mine;              /* far from danger, near to me */
+    if (score > bestScore) { bestScore = score; best = sp; }
+  }
+  return best;
+}
+
+/* A mortar out-ranges a lane tower (340 vs 270), so a shell lobbed from the
+   ring between them grinds the tower down while the tower cannot answer.
+   This finds a legal spot in that ring, on OUR side of the tower so our own
+   wave screens it. */
+const BOT_MAX_BLD = 6;          // builders get a couple more (see stepBot)
+function siegeSpot(sim, p, tw) {
+  /* Search outward from where the BOT is standing relative to the tower — a
+     firing position it can't walk to is no use — but lean toward our own base
+     so the wave screens the mortar. */
+  const home = baseOf(p.team);
+  const aBot = Math.atan2(p.y - tw.y, p.x - tw.x);
+  const aHome = Math.atan2(home.y - tw.y, home.x - tw.x);
+  let lean = aHome - aBot;
+  while (lean > Math.PI) lean -= Math.PI * 2;
+  while (lean < -Math.PI) lean += Math.PI * 2;
+  const bias = Math.sign(lean) * Math.min(Math.abs(lean), 0.5);   /* a nudge homeward */
+  for (const spread of [0, 0.25, -0.25, 0.5, -0.5, 0.8, -0.8, 1.1, -1.1]) {
+    for (const rad of [300, 315, 288, 330, 282, 336]) {
+      const a = aBot + bias + spread;
+      const x = tw.x + Math.cos(a) * rad, y = tw.y + Math.sin(a) * rad;
+      if (dist(p.x, p.y, x, y) > BUILD_R - 10) continue;
+      if (!sim.fog[fogIdx(x, y)]) continue;
+      if (canPlace(sim.world, sim.blds, x, y)) return { x, y };
+    }
+  }
+  return null;
+}
+
+/* is this spot covered by an enemy tower? */
+function underEnemyGuns(sim, team, x, y, pad = 20) {
+  for (const tw of towersOf(sim, 1 - team)) {
+    if (dist(x, y, tw.x, tw.y) <= ETOWER.range + pad) return true;
+  }
+  return false;
+}
 
 function stepBot(sim, p) {
-  if (sim.tick % 10 !== p.seat % 10) return;      // one decision a second, staggered
+  const hdSafe = heroDef(p);
+  const fracNow = p.hp / p.maxhp;
+
+  /* ---------- SAFETY LAYER (every tick) ---------- */
+  if (p.botHpLast === undefined) p.botHpLast = p.hp;
+  const bleed = Math.max(0, p.botHpLast - p.hp);
+  p.botHpLast = p.hp;
+  p.botBleed = (p.botBleed || 0) * 0.88 + bleed;          /* rolling damage taken */
+  const inGuns = underEnemyGuns(sim, p.team, p.x, p.y);
+  /* the more dangerous the spot, the earlier we lose our nerve */
+  const panicAt = inGuns ? 0.60 : (p.botBleed > p.maxhp * 0.05 ? 0.50 : 0.38);
+
+  if (!p.botRetreat && fracNow < panicAt) {
+    p.botRetreat = true;
+    const panic = PANIC_ABILITY[p.hero];
+    if (panic !== undefined) castAbility(sim, p.id, panic);   /* shield / heal / bolt */
+  }
+  if (p.botRetreat) {
+    /* only go back to work once genuinely healthy AND out of the line of fire */
+    if (fracNow > 0.85 && !inGuns) {
+      p.botRetreat = false;
+    } else {
+      const haven = safeHaven(sim, p);
+      p.moveTo = { x: haven.x, y: haven.y };
+      p.dir = { x: 0, y: 0 };
+      p.botWp = null;
+      if (fracNow < 0.35) {                                  /* really desperate */
+        const panic = PANIC_ABILITY[p.hero];
+        if (panic !== undefined) castAbility(sim, p.id, panic);
+      }
+      return;
+    }
+  }
+
+  if (sim.tick % 10 !== p.seat % 10) return;      // strategy thinks once a second
   /* wedged against a tree? hop sideways to a clear spot, then re-plan */
   const wasStuck = p.botLastX !== undefined && p.moveTo && dist(p.x, p.y, p.botLastX, p.botLastY) < 5;
   p.botLastX = p.x; p.botLastY = p.y;
@@ -1376,24 +1472,79 @@ function stepBot(sim, p) {
       if (walkable(sim.world, jx, jy)) { p.moveTo = { x: jx, y: jy }; p.botWp = null; return; }
     }
   }
-  const hd = heroDef(p);
+  const hd = hdSafe;
   const home = baseOf(p.team), oppB = baseOf(1 - p.team);
-  const frac = p.hp / p.maxhp;
+  const frac = fracNow;
 
-  /* --- builder-type bots fortify FIRST, then spend leftovers on gear --- */
-  if (hd.discount && p.coins >= 90 && Math.random() < 0.5 &&
-      sim.blds.filter((b) => b.owner === p.id).length < 6) {
-    for (let tries = 0; tries < 6; tries++) {
-      const bx = p.x + (Math.random() - 0.5) * 320, by = p.y + (Math.random() - 0.5) * 320;
-      if (build(sim, p.id, ['turret', 'mortar', 'syrup'][(Math.random() * 3) | 0], bx, by) === 'ok') break;
+  /* ---------- ECONOMY ----------
+     A bot alternates its spending: one purchase into the hero, the next into
+     the war effort. That way neither the gear sheet nor the siege line ever
+     starves the other, which is roughly how a person plays. */
+  const myBlds = sim.blds.filter((b) => b.owner === p.id && b.type !== 'wall');
+  const cap = hd.discount ? BOT_MAX_BLD + 2 : BOT_MAX_BLD;
+  const priceOf = (t) => Math.round(BLD[t].cost * (hd.discount || 1));
+
+  const buyGear = () => {
+    const order = ['dmg', 'hp', 'pow', 'spd'];
+    const next = order.reduce((a, b) => (p.up[a] <= p.up[b] ? a : b));
+    if (p.up[next] >= HUP_MAX) return false;
+    const cost = hupCost(p.up[next]);
+    if (p.coins < cost + 40) return false;
+    const before = p.up[next];
+    upgradeHero(sim, p.id, next);
+    return p.up[next] > before;
+  };
+
+  const buyWar = () => {
+    /* 1) SIEGE — a mortar parked outside a tower's reach shells it for free */
+    if (myBlds.length < cap && p.coins >= priceOf('mortar') + 40) {
+      let tw = null, td = Infinity;
+      for (const t2 of towersOf(sim, 1 - p.team)) {
+        const d = dist(t2.x, t2.y, p.x, p.y);
+        if (d < 2600 && d < td) { td = d; tw = t2; }
+      }
+      if (tw) {
+        const spot = siegeSpot(sim, p, tw);
+        if (spot && build(sim, p.id, 'mortar', spot.x, spot.y) === 'ok') return true;
+        if (!spot && td > BUILD_R) {
+          const home = baseOf(p.team);
+          const a0 = Math.atan2(home.y - tw.y, home.x - tw.x);
+          p.botErrand = { x: tw.x + Math.cos(a0) * 305, y: tw.y + Math.sin(a0) * 305, until: sim.tick + 300 };
+        }
+      }
     }
-  }
+    /* 2) DEFENCE — shore up a friendly tower that is actually under pressure */
+    if (myBlds.length < cap && p.coins >= priceOf('turret') + 40) {
+      for (const t2 of towersOf(sim, p.team)) {
+        if (dist(t2.x, t2.y, p.x, p.y) >= BUILD_R + 120) continue;
+        let pressure = 0;
+        for (const e of creepsOf(sim, 1 - p.team)) if (dist(e.x, e.y, t2.x, t2.y) < 520) pressure++;
+        if (pressure < 2) continue;
+        const opp = baseOf(1 - p.team);
+        const a0 = Math.atan2(opp.y - t2.y, opp.x - t2.x);
+        for (const spread of [0, 0.5, -0.5, 1, -1]) {
+          const x = t2.x + Math.cos(a0 + spread) * 150, y = t2.y + Math.sin(a0 + spread) * 150;
+          if (dist(p.x, p.y, x, y) > BUILD_R - 10) continue;
+          if (build(sim, p.id, 'turret', x, y) === 'ok') return true;
+        }
+      }
+    }
+    /* 3) UPGRADE — a level-5 mortar hits far harder than three level-1s */
+    const worst = myBlds.filter((b) => b.lvl < BUP.max).sort((a, b) => a.lvl - b.lvl)[0];
+    if (worst && p.coins >= bupCost(worst.lvl) + 40) {
+      const before = worst.lvl;
+      upgradeBld(sim, p.id, worst.id);
+      return worst.lvl > before;
+    }
+    return false;
+  };
 
-  /* --- shopping: same gear shop, same prices, lowest tier first --- */
-  const order = ['dmg', 'hp', 'pow', 'spd'];
-  const next = order.reduce((a, b) => (p.up[a] <= p.up[b] ? a : b));
-  const reserve = hd.discount ? 240 : 120;        // builders save up for bricks
-  if (p.up[next] < HUP_MAX && p.coins >= hupCost(p.up[next]) + reserve) upgradeHero(sim, p.id, next);
+  /* alternate, and fall back to the other pocket if this one can't be spent */
+  if (!p.botSpendTurn) p.botSpendTurn = 'gear';
+  const wantWar = p.botSpendTurn === 'war';
+  let spent = wantWar ? buyWar() : buyGear();
+  if (!spent) spent = wantWar ? buyGear() : buyWar();
+  if (spent) p.botSpendTurn = wantWar ? 'gear' : 'war';
 
   /* --- abilities on the same cooldowns humans get --- */
   const foes = creepsOf(sim, 1 - p.team);
@@ -1405,20 +1556,6 @@ function stepBot(sim, p) {
   if (frac < 0.55 || nNear >= 2) castAbility(sim, p.id, 2);
 
   /* --- macro: heal up when hurt, defend home, jungle early, else push a lane --- */
-  if (p.botRetreat) {
-    if (frac > 0.9) p.botRetreat = false;
-    else {
-      let hx = home.x - Math.sign(home.x) * (home.r + 90), hy = home.y - Math.sign(home.y) * (home.r + 90);
-      let hd2 = dist(p.x, p.y, hx, hy);
-      for (const sp of sim.world.springs) {            /* nearest drink wins */
-        const d = dist(p.x, p.y, sp.x, sp.y);
-        if (d < hd2) { hd2 = d; hx = sp.x; hy = sp.y; }
-      }
-      p.moveTo = { x: hx, y: hy };
-      return;
-    }
-  } else if (frac < 0.35) { p.botRetreat = true; return; }
-
   /* home under siege? peel back */
   let threat = null, td = Infinity;
   for (const e of foes) {
@@ -1437,14 +1574,28 @@ function stepBot(sim, p) {
     if (camp) { p.moveTo = { x: camp.x, y: camp.y }; return; }
   }
 
-  /* healthy and an enemy tower in sight? walk up and dismantle it */
-  if (frac > 0.6) {
+  /* walking out to a firing position we picked earlier */
+  if (p.botErrand) {
+    if (sim.tick > p.botErrand.until || dist(p.x, p.y, p.botErrand.x, p.botErrand.y) < 90) p.botErrand = null;
+    else { p.moveTo = { x: p.botErrand.x, y: p.botErrand.y }; return; }
+  }
+
+  /* dismantle towers — but only in good health and WITH the wave, never solo */
+  if (frac > 0.75) {
     let tw = null, twd = Infinity;
     for (const t2 of towersOf(sim, 1 - p.team)) {
       const d = dist(t2.x, t2.y, p.x, p.y);
       if (d < 560 && d < twd) { twd = d; tw = t2; }
     }
-    if (tw) { p.moveTo = { x: tw.x, y: tw.y }; return; }
+    if (tw) {
+      let mates = 0;
+      for (const a of creepsOf(sim, p.team)) if (dist(a.x, a.y, tw.x, tw.y) < 320) mates++;
+      if (mates >= 3) { p.moveTo = { x: tw.x, y: tw.y }; return; }
+      /* no wave to soak the zaps — hold at the edge of its range instead */
+      const a2 = Math.atan2(p.y - tw.y, p.x - tw.x);
+      p.moveTo = { x: tw.x + Math.cos(a2) * (ETOWER.range + 60), y: tw.y + Math.sin(a2) * (ETOWER.range + 60) };
+      return;
+    }
   }
 
   /* push the assigned lane, waypoint by waypoint (never wedged in trees) */
@@ -1477,7 +1628,13 @@ function stepBot(sim, p) {
     }
     if (ring) { p.moveTo = { x: ring.x, y: ring.y }; return; }
   }
-  p.moveTo = { x: path[p.botWp].x, y: path[p.botWp].y };
+  const goal = path[p.botWp];
+  if (underEnemyGuns(sim, p.team, goal.x, goal.y, -30) && frac < 0.75) {
+    let mates = 0;
+    for (const a of creepsOf(sim, p.team)) if (dist(a.x, a.y, goal.x, goal.y) < 300) mates++;
+    if (mates < 3) { p.moveTo = { x: p.x, y: p.y }; return; }   /* wait for the wave */
+  }
+  p.moveTo = { x: goal.x, y: goal.y };
 
 }
 
@@ -3241,8 +3398,10 @@ function createHost(ctx) {
       const status = r[6] > 0 ? ` · 😵 ${Math.ceil(r[6] / 10)}s` : ` · Lv ${r[11]}`;
       return `<div class="gg-chip ${s.connected ? '' : 'gg-chip-off'}" style="border-color:${s.color}">
         <span class="gg-chip-hero">${hero}</span>
-        <span class="gg-chip-name">${escapeHtml(s.name)}</span>
-        <span class="gg-chip-meta">🪙${r[7]} · ⚔️${r[12]}${status}</span>
+        <span class="gg-chip-text">
+          <span class="gg-chip-name">${escapeHtml(s.name)}</span>
+          <span class="gg-chip-meta">🪙${r[7]} · ⚔️${r[12]}${status}</span>
+        </span>
       </div>`;
     }).join('');
 

@@ -75,7 +75,22 @@ under identical rules: they pick a hero from their side's roster, earn coins
 and XP, buy and upgrade the same gear, cast abilities on the same cooldowns,
 build fortifications (the builder types especially), push lanes, dismantle
 towers, retreat to heal, and respawn like anyone else. They appear on the
-roster with 🤖 badges.
+roster with 🤖 badges. They also have a survival instinct: a safety check runs
+every tick (not just once a second), the panic threshold rises when they're
+standing under a tower or bleeding fast, they fire their kit's escape or heal
+ability on the way out, and they retreat to whichever fountain or spring is
+furthest from whatever is hurting them. They only dive a tower with a creep
+wave to soak the zaps.
+
+Their economy is a real one, too. Bots alternate spending — one purchase into
+the hero, the next into the war effort — so gear and fortifications both keep
+growing instead of starving each other. EVERY hero builds, not just the
+builder classes, they upgrade what they own rather than spamming level 1s,
+and their placement is deliberate: a mortar out-ranges a lane tower (340 vs
+270), so bots park one in the ring just outside the tower's reach, on their
+own side where the wave screens it, and shell the tower down while it cannot
+shoot back. If they're too far from a good firing position, they walk to one
+first.
 
 The wilds are now a proper FOREST: hundreds of tree thickets and rock ridges
 carve real routes between the lanes, and the entire map rim is tree-walled —
