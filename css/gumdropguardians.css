@@ -287,6 +287,20 @@
 .gg-sell { border-color: rgba(255, 255, 255, 0.3); background: rgba(255, 255, 255, 0.06); }
 .gg-buy:active, .gg-sell:active, .gg-bcard:active { transform: scale(0.95); }
 
+/* A building row is TAPPABLE: touching the card (rather than one of its
+   buttons) flies the map to that building and rings it, so nobody has to
+   guess which of six turrets the ⬆️ button is about to upgrade. */
+.gg-bldcard { cursor: pointer; border: 2px solid transparent; transition: border-color 0.12s, background 0.12s; }
+.gg-bldcard:active { background: rgba(255, 255, 255, 0.12); }
+.gg-bldcard-on {
+  border-color: #ffd93d;
+  background: rgba(255, 217, 61, 0.14);
+  box-shadow: 0 0 0 2px rgba(255, 217, 61, 0.25);
+}
+.gg-bldcard-on .gg-up-info b::after { content: ' 👈'; }
+/* the sell button now shows what you actually get back, so it needs room */
+.gg-sell { font-size: 0.78rem; padding: 10px 9px; }
+
 .gg-bcard {
   width: 100%; display: flex; align-items: center; gap: 12px;
   background: rgba(255, 255, 255, 0.07);
