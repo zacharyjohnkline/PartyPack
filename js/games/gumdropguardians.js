@@ -147,10 +147,10 @@ const ABILITIES = {
   knight: [
     ['Shield Charge', '🐏', 180, 'CHARGE forward, then slam: damage + stun'],
     ['Battle Cry',  '📣', 250, 'Taunt — enemies nearby chase YOU'],
-    ['Frosting Armor', '🧊', 300, 'Take 35% less damage briefly (towers pierce it)'],
+    ['Cake Quake', '🍰', 240, 'SLAM the ground: damage + stun everything around you'],
   ],
   ranger: [
-    ['Berry Barrage', '🫐', 200, 'Hit every enemy around you'],
+    ['Berry Bomb', '🫐', 200, 'LOB a berry grenade — big blast where it lands'],
     ['Jam Trap', '🍓', 220, 'Sticky field that slows enemies'],
     ['Piercing Shot', '🎯', 260, 'Huge damage to the biggest foe in sight'],
   ],
@@ -161,7 +161,7 @@ const ABILITIES = {
   ],
   builder: [
     ['Quick Fix', '🔧', 200, 'Repair every building near you'],
-    ['Overclock', '⚡', 280, 'YOUR towers nearby fire twice as fast'],
+    ['Frosting Bomb', '🧁', 240, 'LOB a frosting grenade — big blast where it lands'],
     ['Candy Decoy', '🍡', 350, 'Drop a decoy enemies love to chew'],
   ],
   slasher: [
@@ -172,7 +172,7 @@ const ABILITIES = {
   whip: [
     ['Triple Lash', '🪢', 190, 'Crack the whip at the 3 nearest foes'],
     ['Sticky Snare', '🕸️', 230, 'Gooey field that badly slows foes'],
-    ['Sugar Rush', '🍭', 320, 'Your whole team sprints for a while'],
+    ['Sour Grenade', '🧨', 230, 'LOB a sour grenade — big blast where it lands'],
   ],
   shaman: [
     ['Shard Volley', '💎', 190, 'Crystal shards: damage + stun — and YOU dash free'],
@@ -180,7 +180,7 @@ const ABILITIES = {
     ['Dark Feast', '🦇', 260, 'Drain life from every foe near you'],
   ],
   tinker: [
-    ['Goo Bomb', '🫠', 200, 'Splash of taffy: damage + a big slow'],
+    ['Goo Bomb', '🫠', 200, 'LOB a taffy grenade: blast + a big slow where it lands'],
     ['Patch-Up', '🔧', 200, 'Repair nearby buildings (and yourself a bit)'],
     ['Scrap Turret', '🤖', 340, 'Deploy a temporary auto-turret'],
   ],
@@ -245,9 +245,12 @@ const BLD = {
               desc: 'Slows everything nearby AND glazes it — glazed foes take +35% damage' },
   /* A creep pump with a fuse. Seven waves of five, one wave every 7 s, and
      they MARCH — they do not loiter at home. Then it is spent: sell it. */
+  /* Two per hero, tops, with a 30 s wait between builds — the barracks-spam
+     meta was drowning the board. Level it up AFTER it runs dry to reload all
+     seven waves with tougher gummies. */
   barracks: { label: 'Gummy Barracks',   emoji: '🏕️', cost: 150, hp: 1100, r: 30,
-              squad: 5, waveCd: 70, waves: 7,
-              desc: 'Sends 5 tough gummies down the lane every 7s — 7 waves, then spent' },
+              squad: 5, waveCd: 100, waves: 7, maxOwn: 2, buildCd: 300,
+              desc: 'Sends 5 gummies down the lane every 10s, 7 waves. Upgrade when empty to reload!' },
   /* The Great Wall of Gumdrop. See the WALL block below. */
   wall:     { label: 'Gumdrop Wall',     emoji: '🧱', cost: 90,  hp: 0, r: 20,
               desc: 'Barricade — blocks ground troops AND tower fire. Upgrade to snake it longer.' },
@@ -283,7 +286,6 @@ const WALL = {
   hp: 900,                         // per brick
   startSegs: 2,                    // level 1 is a short stub
   perLvl: 2,                       // +2 bricks per upgrade → 10 at level 5
-  bend: Math.PI / 4,               // sharpest turn between neighbouring bricks
   lure: 210,                       // creeps that bump it decide to chew it
 };
 
@@ -875,6 +877,36 @@ function canPlace(world, blds, x, y, fog, type = 'turret', walls = null) {
   if (walls) for (const seg of walls) if (segHit(seg, x, y, isWall ? 8 : 24)) return false;
   return true;
 }
+/* Plan a wall stub: where the bricks would go, or null if they don't fit.
+   The SAME function runs on the host (to build) and on the phone (to colour
+   the ghost), so what you see green is exactly what will be accepted. The
+   axis is ACROSS the line from the hero to the aim point — the player picks
+   the direction — with home-facing as the fallback for a zero-length aim,
+   and at most a 20-degree nudge either way to clear an obstruction. */
+function planWallStub(world, blds, fog, heroX, heroY, x, y, homeX, homeY, walls) {
+  const aimed = dist(heroX, heroY, x, y) > 20;
+  const facing = aimed ? Math.atan2(y - heroY, x - heroX)
+                       : Math.atan2(y - homeY, x - homeX);
+  for (const off of [0, 0.35, -0.35]) {
+    const a = facing + Math.PI / 2 + off;
+    const trial = [];
+    for (let k = 0; k < WALL.startSegs; k++) {
+      const t = k - (WALL.startSegs - 1) / 2;
+      const bx = x + Math.cos(a) * WALL.seg * t, by = y + Math.sin(a) * WALL.seg * t;
+      let ok = true;
+      for (const q of [-1, 0, 1]) {          /* both ends and the middle of the brick */
+        const px = bx + Math.cos(a) * WALL.half * q * 0.92;
+        const py = by + Math.sin(a) * WALL.half * q * 0.92;
+        if (!canPlace(world, blds, px, py, fog, 'wall', walls)) { ok = false; break; }
+      }
+      if (!ok) { trial.length = 0; break; }
+      trial.push({ x: Math.round(bx), y: Math.round(by), a });
+    }
+    if (trial.length === WALL.startSegs) return trial;
+  }
+  return null;
+}
+
 /* flatten every wall on the field into one brick list — the shape both the
    host sim and the phone's placement ghost want */
 const allSegs = (blds) => {
@@ -1136,15 +1168,17 @@ function tryBrick(sim, x, y, a, skip = []) {
   return { x: Math.round(x), y: Math.round(y), a };
 }
 
-/* Snake more bricks onto the wall, growing from whichever END the owner is
-   standing nearest — walk to the end you want to extend and it follows you.
-   If that end has run into a mountain, the other end takes the brick instead,
-   so an upgrade is never silently wasted. Bends are capped at WALL.bend per
-   brick, so the wall curves like a wall rather than folding back on itself. */
+/* Extend the wall in a STRAIGHT line — a blockade, not a spiral. Each new
+   brick continues the wall's own axis, full stop: the bend-toward-the-owner
+   steering is gone, because it turned every long wall into a curl. The
+   player picks WHICH end grows by standing near it (the other end is the
+   fallback if that one has hit a tree or the edge of the board), and the
+   direction was decided once, when the stub was laid. If the line is
+   blocked, the upgrade refuses and charges nothing — it never veers. */
 function growWall(sim, w, toward, n) {
   let added = 0;
   for (let k = 0; k < n; k++) {
-    /* both ends, nearest to the hero first */
+    /* both ends, the one the hero stands nearest first */
     const ends = [];
     ends.push({ tip: w.segs[w.segs.length - 1], prev: w.segs[w.segs.length - 2] || null, head: false });
     if (w.segs.length > 1) ends.push({ tip: w.segs[0], prev: w.segs[1] || null, head: true });
@@ -1154,24 +1188,13 @@ function growWall(sim, w, toward, n) {
     }
     let placed = null, atHead = false;
     for (const e of ends) {
-      /* the direction this end is already travelling, away from the wall */
-      let run = e.prev ? Math.atan2(e.tip.y - e.prev.y, e.tip.x - e.prev.x) : e.tip.a;
-      if (toward) {
-        let want = Math.atan2(toward.y - e.tip.y, toward.x - e.tip.x);
-        let turn = want - run;
-        while (turn > Math.PI) turn -= Math.PI * 2;
-        while (turn < -Math.PI) turn += Math.PI * 2;
-        run += clamp(turn, -WALL.bend, WALL.bend);
-      }
-      for (const off of [0, 0.3, -0.3, 0.6, -0.6, 0.95, -0.95]) {
-        const a = run + off;
-        const seg = tryBrick(sim, e.tip.x + Math.cos(a) * WALL.seg,
-                                  e.tip.y + Math.sin(a) * WALL.seg, a, [e.tip]);
-        if (seg) { placed = seg; atHead = e.head; break; }
-      }
-      if (placed) break;
+      /* dead straight: continue the line this end is already on */
+      const run = e.prev ? Math.atan2(e.tip.y - e.prev.y, e.tip.x - e.prev.x) : e.tip.a;
+      const seg = tryBrick(sim, e.tip.x + Math.cos(run) * WALL.seg,
+                                e.tip.y + Math.sin(run) * WALL.seg, run, [e.tip]);
+      if (seg) { placed = seg; atHead = e.head; break; }
     }
-    if (!placed) break;                       /* boxed in at both ends — stop here */
+    if (!placed) break;                       /* the line is blocked at both ends */
     if (atHead) {
       placed.a = alignAngle(placed.a, w.segs[0].a);
       w.segs.unshift(placed);
@@ -1197,28 +1220,25 @@ function build(sim, playerId, type, x, y) {
   const def = BLD[type];
   if (p.dead) return 'dead';                       /* ghosts don't lay bricks */
   if (myBuildings(sim, playerId).length >= MAX_BLD) return 'full';
+  if (type === 'barracks') {
+    const own = myBuildings(sim, playerId).filter((b) => b.type === 'barracks').length;
+    if (own >= BLD.barracks.maxOwn) return 'bmax';
+    if (p.barracksAt !== undefined && sim.tick - p.barracksAt < BLD.barracks.buildCd) return 'bcool';
+  }
   const cost = Math.round(def.cost * (heroDef(p).discount || 1));
   if (p.coins < cost) return 'coins';
   if (dist(p.x, p.y, x, y) > BUILD_R) return 'far';
   if (!sim.fog[fogIdx(x, y)]) return 'fog';
 
   if (type === 'wall') {
-    /* the stub is laid ACROSS the line from your own keep, so it faces the
-       enemy and you are automatically standing on the climbable side */
+    /* YOU aim the wall. It is laid ACROSS the line from your hero to the
+       spot you tapped, and every later upgrade extends that axis dead
+       straight — the direction you choose here is the direction of the
+       whole finished blockade. The planner is shared with the phone's
+       ghost, so a green preview is a promise. */
     const home = baseOf(p.team);
-    const facing = Math.atan2(y - home.y, x - home.x);
-    let segs = null;
-    for (const off of [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05]) {
-      const a = facing + Math.PI / 2 + off;
-      const trial = [];
-      for (let k = 0; k < WALL.startSegs; k++) {
-        const t = k - (WALL.startSegs - 1) / 2;
-        const seg = tryBrick(sim, x + Math.cos(a) * WALL.seg * t, y + Math.sin(a) * WALL.seg * t, a, trial);
-        if (!seg) { trial.length = 0; break; }
-        trial.push(seg);
-      }
-      if (trial.length === WALL.startSegs) { segs = trial; break; }
-    }
+    const segs = planWallStub(sim.world, sim.blds, sim.fog, p.x, p.y, x, y,
+                              home.x, home.y, allSegs(sim.blds));
     if (!segs) return 'spot';
     p.coins -= cost;
     const hp = WALL.startSegs * WALL.hp;
@@ -1236,6 +1256,7 @@ function build(sim, playerId, type, x, y) {
   p.coins -= cost;
   const b = { id: sim.nextId++, owner: playerId, team: p.team, type, x: Math.round(x), y: Math.round(y),
               lvl: 1, hp: def.hp, maxhp: def.hp, cd: 10, boost: 0, waveCd: 12, wavesLeft: def.waves || 0 };
+  if (type === 'barracks') p.barracksAt = sim.tick;
   sim.blds.push(b);
   sim.stats.built++;
   addFx(sim, 'built', b.x, b.y);
@@ -1282,6 +1303,20 @@ function upgradeBld(sim, playerId, bldId) {
   if (b.lvl >= BUP.max) return 'max';
   const cost = bupCost(b.lvl);
   if (p.coins < cost) return 'coins';
+  if (b.type === 'barracks') {
+    /* an upgrade is a RELOAD: it refills all seven waves with tougher
+       gummies, so it only makes sense — and is only allowed — once every
+       gummy of the current stock has marched out the door */
+    if (b.wavesLeft > 0) return 'busy';
+    p.coins -= cost;
+    b.lvl++;
+    const hpGain = Math.round(b.maxhp * (BUP.hpMul - 1));
+    b.maxhp += hpGain; b.hp = b.maxhp;              /* fresh walls with the fresh stock */
+    b.wavesLeft = BLD.barracks.waves;
+    b.waveCd = 20;                                  /* first new wave in 2 s */
+    addFx(sim, 'level', b.x, b.y);
+    return 'ok';
+  }
   if (b.type === 'wall') {
     /* you have to WALK the wall out — stand near either END to extend it */
     const head = b.segs[0], tail = b.segs[b.segs.length - 1];
@@ -1520,6 +1555,37 @@ function facingOf(sim, p, foes, hint) {
   return { x: dx / m, y: dy / m };
 }
 
+/* ---------------- candy grenades ----------------
+   The ranged heroes' answer to Spin Slash: the same burst of area damage,
+   thrown to where the fight actually is instead of demanding they wade in.
+   Where it lands, in priority order: the thing you TAPPED if it is in throw
+   range and the stick is idle; otherwise a full-range lob the way you are
+   facing (stick sent with the press → live stick → tapped mark → last
+   heading — the same ladder every leap uses). */
+const LOB_RANGE = 300;
+function lobTarget(sim, p, hint) {
+  const stickLive = (hint && (hint.x || hint.y)) || p.dir.x || p.dir.y;
+  if (!stickLive) {
+    const foc = resolveFocus(sim, p);
+    if (foc) {
+      const at = aimPoint(foc.what, p.x, p.y);
+      if (dist(at.x, at.y, p.x, p.y) <= LOB_RANGE + 40) return { x: at.x, y: at.y };
+    }
+  }
+  const f = facingOf(sim, p, creepsOf(sim, 1 - p.team), hint);
+  return { x: clamp(p.x + f.x * LOB_RANGE, -WORLD_W, WORLD_W),
+           y: clamp(p.y + f.y * LOB_RANGE, -WORLD_H, WORLD_H) };
+}
+/* arcs over walls and trees — it is a grenade — and detonates 0.6 s later
+   through the same impact system the mage's meteor uses */
+function lobGrenade(sim, p, hint, dmg, r, slow, slowT) {
+  const at = lobTarget(sim, p, hint);
+  addFx(sim, 'shell', p.x, p.y, at.x, at.y);
+  sim.impacts.push({ t: sim.tick + 6, kind: 'boom', team: p.team, x: at.x, y: at.y,
+                     r, dmg: Math.round(dmg), owner: p.id, air: true, slow, slowT });
+  return at;
+}
+
 function castAbility(sim, playerId, i, hint) {
   const p = sim.players.get(playerId);
   if (!p || !p.hero || p.dead || sim.phase !== 'play') return;
@@ -1555,15 +1621,22 @@ function castAbility(sim, playerId, i, hint) {
         e.taunt = { id: p.id, t: Math.round(60 * pm) };
       }
     } else {
-      p.armor = Math.min(ARMOR_MAX_T, Math.round(70 + 30 * (pm - 1)));
-      addFx(sim, 'shield', p.x, p.y);
+      /* Cake Quake: the knight's Spin Slash. Slam the ground — everything in
+         arm's reach takes a hit and staggers, which doubles as the exit no
+         pure buff ever gave him when the game was on the line */
+      addFx(sim, 'bash', p.x, p.y, undefined, undefined, 170);
+      for (const e of foes) if (dist(e.x, e.y, p.x, p.y) <= 170) {
+        hurtCreep(sim, e, Math.round(50 * pm), p.id);
+        if (!creepDef(e.team, e.type).boss) e.stun = Math.max(e.stun, 18);
+      }
+      for (const q of oppHeroes(sim, p.team)) if (dist(q.x, q.y, p.x, p.y) <= 170) pvpHit(sim, q, 50 * pm, p);
+      for (const n of sim.neutrals) if (dist(n.x, n.y, p.x, p.y) <= 170) hurtNeutral(sim, n, Math.round(50 * pm), p.id);
     }
   } else if (p.hero === 'ranger') {
     if (i === 0) {
-      addFx(sim, 'barrage', p.x, p.y, undefined, undefined, 240);
-      for (const e of foes) if (dist(e.x, e.y, p.x, p.y) <= 240) hurtCreep(sim, e, Math.round(30 * pm), p.id);
-      for (const q of oppHeroes(sim, p.team)) if (dist(q.x, q.y, p.x, p.y) <= 240) pvpHit(sim, q, 30 * pm, p);
-      for (const n of sim.neutrals) if (dist(n.x, n.y, p.x, p.y) <= 240) hurtNeutral(sim, n, Math.round(30 * pm), p.id);
+      /* Berry Bomb: the old barrage burst around HERSELF, which asked a
+         ranged hero to stand in melee to use it. Now it is thrown. */
+      lobGrenade(sim, p, hint, 55 * pm, 130);
     } else if (i === 1) {
       sim.impacts.push({ t: sim.tick, kind: 'field', team: p.team, x: p.x, y: p.y, r: 150, slow: 0.55, until: sim.tick + Math.round(80 * pm) });
       addFx(sim, 'trap', p.x, p.y, undefined, undefined, 150);
@@ -1646,10 +1719,9 @@ function castAbility(sim, playerId, i, hint) {
       sim.impacts.push({ t: sim.tick, kind: 'field', team: p.team, x: p.x, y: p.y, r: 130, slow: 0.7, until: sim.tick + Math.round(90 * pm) });
       addFx(sim, 'trap', p.x, p.y, undefined, undefined, 130);
     } else {
-      addFx(sim, 'overclock', p.x, p.y, undefined, undefined, 400);
-      for (const q of sim.players.values()) {
-        if (q.hero && !q.dead && q.team === p.team && dist(q.x, q.y, p.x, p.y) <= 400) q.haste = Math.min(BUFF_MAX_T, Math.round(45 + 25 * (pm - 1)));
-      }
+      /* Sour Grenade: the team-sprint was a nice-to-have that decided
+         nothing. A thrown blast decides fights. */
+      lobGrenade(sim, p, hint, 60 * pm, 130);
     }
   } else if (p.hero === 'shaman') {
     if (i === 0) {
@@ -1679,9 +1751,9 @@ function castAbility(sim, playerId, i, hint) {
     }
   } else if (p.hero === 'tinker') {
     if (i === 0) {
-      addFx(sim, 'syrup', p.x, p.y, undefined, undefined, 180);
-      for (const e of foes) if (dist(e.x, e.y, p.x, p.y) <= 180) { hurtCreep(sim, e, Math.round(30 * pm), p.id); applySlow(e, 0.5, 60); }
-      for (const q of oppHeroes(sim, p.team)) if (dist(q.x, q.y, p.x, p.y) <= 180) { pvpHit(sim, q, 30 * pm, p); applySlowHero(q, 0.5, 60); }
+      /* Goo Bomb: it was always CALLED a bomb — now it flies like one,
+         and everything caught in the splash is slowed to a crawl */
+      lobGrenade(sim, p, hint, 40 * pm, 140, 0.5, 60);
     } else if (i === 1) {
       addFx(sim, 'heal', p.x, p.y, undefined, undefined, 200);
       for (const b of myBlds) if (dist(b.x, b.y, p.x, p.y) <= 200) b.hp = Math.min(b.maxhp, b.hp + b.maxhp * 0.5 * pm);
@@ -1698,8 +1770,9 @@ function castAbility(sim, playerId, i, hint) {
       addFx(sim, 'heal', p.x, p.y, undefined, undefined, 200);
       for (const b of myBlds) if (dist(b.x, b.y, p.x, p.y) <= 200) b.hp = Math.min(b.maxhp, b.hp + b.maxhp * 0.5 * pm);
     } else if (i === 1) {
-      addFx(sim, 'overclock', p.x, p.y, undefined, undefined, 260);
-      for (const b of myBlds) if (b.owner === p.id && dist(b.x, b.y, p.x, p.y) <= 260) b.boost = Math.round(80 * pm);
+      /* Frosting Bomb: Greta finally hits back. Overclock was a buff to
+         buildings that might not exist yet, worth nothing in an open brawl. */
+      lobGrenade(sim, p, hint, 55 * pm, 130);
     } else {
       const b = { id: sim.nextId++, owner: p.id, team: p.team, type: 'decoy', x: Math.round(p.x), y: Math.round(p.y),
                   lvl: 1, hp: Math.round(BLD.decoy.hp * pm), maxhp: Math.round(BLD.decoy.hp * pm),
@@ -1913,8 +1986,10 @@ function stepCreep(sim, u) {
    layer that thinks once a second. */
 
 /* the ability each hero reaches for when things go wrong */
+/* which slot a fleeing robot slams: an escape or a heal, never a wind-up.
+   Knight's slam stuns his pursuers; the whip drops her snare at her feet. */
 const PANIC_ABILITY = { knight: 2, builder: 2, ranger: 1, mage: 2,
-                        slasher: 2, tinker: 1, whip: 2, shaman: 2 };
+                        slasher: 2, tinker: 1, whip: 1, shaman: 2 };
 
 /* where should a hurt bot run to? nearest healing water that isn't toward
    the thing that's hurting it */
@@ -2301,8 +2376,8 @@ function stepBld(sim, b) {
   /* ---- BARRACKS: seven waves of five, one every seven seconds ---- */
   if (b.type === 'barracks') {
     if (b.wavesLeft > 0) {
-      if (b.waveCd > 0) b.waveCd--;
-      else { b.waveCd = def.waveCd; b.wavesLeft--; spawnGummySquad(sim, b); }
+      if (b.waveCd > 1) b.waveCd--;
+      else { b.waveCd = def.waveCd; b.wavesLeft--; spawnGummySquad(sim, b); }   /* exactly 10.0 s apart */
     }
     return;
   }
@@ -2710,11 +2785,18 @@ function stepSim(sim) {
       addFx(sim, 'boom', im.x, im.y, undefined, undefined, im.r);
       for (const e of creepsOf(sim, 1 - im.team)) {
         if (creepDef(e.team, e.type).air && !im.air) continue;
-        if (dist(e.x, e.y, im.x, im.y) <= im.r) hurtCreep(sim, e, im.dmg, im.owner);
+        if (dist(e.x, e.y, im.x, im.y) > im.r) continue;
+        hurtCreep(sim, e, im.dmg, im.owner);
+        if (im.slow) applySlow(e, im.slow, im.slowT || 40);
       }
       const owner = im.owner ? sim.players.get(im.owner) : null;
       for (const q of oppHeroes(sim, im.team)) {
-        if (dist(q.x, q.y, im.x, im.y) <= im.r) pvpHit(sim, q, im.dmg, owner);
+        if (dist(q.x, q.y, im.x, im.y) > im.r) continue;
+        pvpHit(sim, q, im.dmg, owner);
+        if (im.slow) applySlowHero(q, im.slow, im.slowT || 40);
+      }
+      for (const n of sim.neutrals) {
+        if (dist(n.x, n.y, im.x, im.y) <= im.r && im.owner) hurtNeutral(sim, n, im.dmg, im.owner);
       }
       im.done = true;
     }
@@ -4285,6 +4367,12 @@ function createHost(ctx) {
         else if (res === 'far') ctx.sendTo(playerId, { k: 'toast', msg: '📏 Too far! You can only build near your hero' });
         else if (res === 'dead') ctx.sendTo(playerId, { k: 'toast', msg: "💀 You're down — no building until you respawn" });
         else if (res === 'full') ctx.sendTo(playerId, { k: 'toast', msg: `🏗️ ${MAX_BLD}-building limit — sell one first` });
+        else if (res === 'bmax') ctx.sendTo(playerId, { k: 'toast', msg: `🏕️ ${BLD.barracks.maxOwn} barracks max — sell or lose one first` });
+        else if (res === 'bcool') {
+          const p2 = sim.players.get(playerId);
+          const left = Math.ceil((BLD.barracks.buildCd - (sim.tick - (p2.barracksAt || 0))) / 10);
+          ctx.sendTo(playerId, { k: 'toast', msg: `🏕️ Barracks cooling down — ${left}s until you can build another` });
+        }
         break;
       }
       case 'up': upgradeHero(sim, playerId, data.what); break;
@@ -4292,7 +4380,8 @@ function createHost(ctx) {
         const res = upgradeBld(sim, playerId, data.id | 0);
         if (res === 'coins') ctx.sendTo(playerId, { k: 'toast', msg: 'Not enough coins! 🪙' });
         else if (res === 'far') ctx.sendTo(playerId, { k: 'toast', msg: '🧱 Walk to the END of the wall to extend it' });
-        else if (res === 'spot') ctx.sendTo(playerId, { k: 'toast', msg: "🧱 No room that way — face open ground and try again" });
+        else if (res === 'spot') ctx.sendTo(playerId, { k: 'toast', msg: "🧱 The wall's line is blocked — nowhere straight ahead to build" });
+        else if (res === 'busy') ctx.sendTo(playerId, { k: 'toast', msg: '🏕️ Still marching gummies out — upgrade reloads it once it runs empty' });
         break;
       }
       case 'sell': sellBld(sim, playerId, data.id | 0); break;
@@ -4866,11 +4955,15 @@ function createController(ctx) {
         const sub = isWall ? `Level ${r.lvl} · ${r.segs} bricks · ${r.hp}% HP`
           : r.type === 'barracks' ? `Level ${r.lvl} · ${r.waves} waves left · ${r.hp}% HP`
           : `Level ${r.lvl} · ${r.hp}% HP`;
-        const upLabel = maxed ? 'MAX' : isWall ? `🧱 +${WALL.perLvl} 🪙${cost}` : `⬆️ 🪙${cost}`;
+        const busy = r.type === 'barracks' && r.waves > 0;
+        const upLabel = maxed ? 'MAX'
+          : isWall ? `🧱 +${WALL.perLvl} 🪙${cost}`
+          : r.type === 'barracks' ? (busy ? `⏳ ${r.waves} left` : `🔄 reload 🪙${cost}`)
+          : `⬆️ 🪙${cost}`;
         return `<div class="gg-uprow gg-bldcard${focusBld === r.id ? ' gg-bldcard-on' : ''}" data-find="${r.id}" data-fx="${r.x}" data-fy="${r.y}">
           <span class="gg-up-emoji">${def.emoji}</span>
           <span class="gg-up-info"><b>${def.label}</b><small>${sub}</small></span>
-          <button class="gg-buy" data-bup="${r.id}" ${maxed || coins < cost ? 'disabled' : ''}>${upLabel}</button>
+          <button class="gg-buy" data-bup="${r.id}" ${maxed || busy || coins < cost ? 'disabled' : ''}>${upLabel}</button>
           <button class="gg-sell" data-sell="${r.id}" title="Sell for ${refund}">💰${refund}</button>
         </div>`;
       }).join('') : `<p class="gg-empty">No buildings yet — hit the 🔨 Build tab!<br><small>Only YOU can upgrade what you build.</small></p>`;
@@ -4897,12 +4990,15 @@ function createController(ctx) {
       const owned = (snap.b.filter((r) => r[1] === mySeat && BTYPE[r[2]] !== 'decoy').length)
         + ((snap.w || []).filter((r) => r[1] === mySeat).length);
       const full = owned >= MAX_BLD;
+      const myBarracks = snap.b.filter((r) => r[1] === mySeat && BTYPE[r[2]] === 'barracks').length;
       body.innerHTML = `<p class="gg-empty"><small>1️⃣ Tap a building &nbsp;2️⃣ Tap the map to aim &nbsp;3️⃣ Hit 🔨 Place<br>
         🏗️ ${owned}/${MAX_BLD} used${full ? ' — sell one to build again' : ''}</small></p>` + BUILDABLE.map((t) => {
         const def = BLD[t], cost = Math.round(def.cost * disc);
-        return `<button class="gg-bcard" data-build="${t}" ${full || coins < cost ? 'disabled' : ''}>
+        const atCap = t === 'barracks' && myBarracks >= BLD.barracks.maxOwn;
+        const tag = t === 'barracks' ? ` · ${myBarracks}/${BLD.barracks.maxOwn}` : '';
+        return `<button class="gg-bcard" data-build="${t}" ${full || atCap || coins < cost ? 'disabled' : ''}>
           <span class="gg-bcard-emoji">${def.emoji}</span>
-          <span class="gg-bcard-info"><b>${def.label}</b><small>${def.desc}</small></span>
+          <span class="gg-bcard-info"><b>${def.label}${tag}</b><small>${def.desc}</small></span>
           <span class="gg-bcard-cost">🪙 ${cost}</span>
         </button>`;
       }).join('') + (disc < 1 ? `<p class="gg-empty"><small>🔧 Greta's discount applied!</small></p>` : '');
@@ -4914,7 +5010,7 @@ function createController(ctx) {
           autoAim();
           syncMode(true);
           toast(b.dataset.build === 'wall'
-            ? 'Aim the wall, then Place — upgrade it later to snake it longer!'
+            ? 'The wall lays ACROSS your aim — point at what you want blocked, then Place!'
             : 'Tap inside your hero\'s ring to aim — Place when it turns green!');
         });
       }
@@ -4990,8 +5086,14 @@ function createController(ctx) {
       const me0 = myRow(snap);
       const down = !me0 || me0[6] > 0;
       const inReach = !!me0 && Math.hypot(placing.x - me0[2], placing.y - me0[3]) <= BUILD_R;
-      const ok = !down && inReach &&
-        canPlace(world, snap.b, placing.x, placing.y, fog, placing.type, snapSegs(snap));
+      const home2 = myTeam === 1 ? { x: HORDE.x, y: HORDE.y } : { x: CASTLE.x, y: CASTLE.y };
+      const wallPlan = isWall && me0
+        ? planWallStub(world, snap.b, fog, me0[2], me0[3], placing.x, placing.y,
+                       home2.x, home2.y, snapSegs(snap))
+        : null;
+      const ok = !down && inReach && (isWall
+        ? !!wallPlan
+        : canPlace(world, snap.b, placing.x, placing.y, fog, placing.type, snapSegs(snap)));
       if (me0) {                                        /* show the reach you're working in */
         g.save(); g.translate(me0[2], me0[3]);
         g.strokeStyle = down ? 'rgba(255,77,109,.75)' : inReach ? 'rgba(107,207,127,.8)' : 'rgba(255,217,61,.85)';
@@ -5015,12 +5117,15 @@ function createController(ctx) {
       g.restore();
       g.globalAlpha = 0.8;
       if (isWall && me0) {
-        /* preview the stub exactly where the sim will lay it: across the line
-           from your own keep, so you are on the climbable side */
-        const home = myTeam === 1 ? { x: HORDE.x, y: HORDE.y } : { x: CASTLE.x, y: CASTLE.y };
-        const a = Math.atan2(placing.y - home.y, placing.x - home.x) + Math.PI / 2;
+        /* preview the EXACT bricks the planner returned — what you see is
+           what the host will lay. If the plan failed, still sketch the
+           intended axis so the red ghost shows what did not fit. */
+        const aimed = Math.hypot(placing.x - me0[2], placing.y - me0[3]) > 20;
+        const a = (aimed ? Math.atan2(placing.y - me0[3], placing.x - me0[2])
+                         : Math.atan2(placing.y - home2.y, placing.x - home2.x)) + Math.PI / 2;
         const ghost = [0, mySeat, myTeam, 1, 100];
-        for (let k = 0; k < WALL.startSegs; k++) {
+        if (wallPlan) for (const sg of wallPlan) ghost.push(sg.x, sg.y, sg.a);
+        else for (let k = 0; k < WALL.startSegs; k++) {
           const t = k - (WALL.startSegs - 1) / 2;
           ghost.push(placing.x + Math.cos(a) * WALL.seg * t, placing.y + Math.sin(a) * WALL.seg * t, a);
         }
@@ -5087,7 +5192,8 @@ export const __sim = {
   WALL, BTYPE, BUILDABLE, MAX_BLD, SELL_BACK, GLAZE_MUL, N_PATHS,
   hupCost, bupCost, HUP_MAX, RESPAWN_T, LASTHIT_COIN, ASSIST_COIN,
   FOUNTAIN_R, FOUNTAIN_HEAL, FOUNTAIN_FIGHT_T, FOUNTAIN_FIGHT_MUL,
+  lobTarget, lobGrenade, LOB_RANGE, ABILITIES,
   wallAt, foeWallAt, wallSide, segHit, wallBlocksLine, foeWallBlocks, wallPasses, nearestSeg, allSegs,
-  growWall, setFocus, resolveFocus, myBuildings, bldPaid, laneMuster,
+  growWall, planWallStub, setFocus, resolveFocus, myBuildings, bldPaid, laneMuster,
   spawnGummySquad, GUMMY, slideMove, facingOf, onOwnFountain,
 };

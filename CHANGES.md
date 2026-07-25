@@ -336,3 +336,75 @@ A full 6v6 runs clean: twelve players, 3.9 ms per tick against a 100 ms budget,
 column rather than running off the bottom.
 
 Tests are at **172**.
+
+---
+
+# Follow-up: barracks discipline, grenades for everyone, straight walls
+
+## Barracks
+
+The spam is over. **Two barracks per hero**, with a **30-second cooldown**
+between builds, and waves now come **10 seconds apart** instead of 7. All
+three numbers live on `BLD.barracks` (`maxOwn`, `buildCd`, `waveCd`) if you
+want to tune them.
+
+**Upgrading is now a reload.** It refills all seven waves with tougher
+gummies (+25% HP and damage per level), repairs the building to full — and it
+is only allowed once the current stock has fully marched out. Try it early
+and it refuses, charges nothing, burns no level, and the phone explains why.
+The building card shows the state at a glance: `⏳ 4 left` while it is still
+training, `🔄 reload 🪙140` once it runs dry. The build tab shows your
+`1/2` count and greys the card out at the cap.
+
+## Every hero has real area damage now
+
+The audit you asked for, kit by kit: the three pure buffs that decided
+nothing are gone, and every ranged hero's AoE is now **thrown**, not
+centred on themselves.
+
+| Hero | Out | In |
+|---|---|---|
+| Gumdrop Knight | Frosting Armor (buff) | **Cake Quake** 🍰 — slam: damage + stun all around |
+| Berry Ranger | Berry Barrage (around self) | **Berry Bomb** 🫐 — thrown, blast at the landing spot |
+| Gingerbread Greta | Overclock (buff) | **Frosting Bomb** 🧁 — thrown blast |
+| Licorice Whip | Sugar Rush (team sprint) | **Sour Grenade** 🧨 — thrown blast |
+| Taffy Tinker | Goo Bomb (around self) | **Goo Bomb** 🫠 — now actually thrown; blast + big slow |
+
+Slasher (Spin Slash), Mage (Jawbreaker meteor + Mint Nova) and Shaman (Shard
+Volley + Dark Feast) already had theirs and are untouched.
+
+Grenades fly **300 px** and use the same aiming ladder as leaps: the stick
+sent with the press, then the live stick, then — with the stick idle — **the
+target you tapped** catches the throw dead-on, then your last heading. They
+arc over walls and trees and detonate 0.6 s after landing through the same
+impact system as the mage's meteor, and explosions can now carry a slow
+(which is how the Goo Bomb works). Blasts also hit fliers.
+
+Robot notes: the whip's panic button moved from the departed Sugar Rush to
+her snare — she drops the goo at her feet and runs. The knight keeps slot 2
+as his panic: the slam's stun is a better escape than the armor ever was.
+Fixed while testing: barracks waves fired every 10.1 s, not 10.0 — a classic
+decrement-then-check off-by-one.
+
+## Walls: straight blockades, and YOU aim them
+
+The spiral is gone. Growth used to bend each new brick toward wherever the
+owner stood, which turned every long wall into a curl. Now every upgrade
+continues the wall's own axis **dead straight** — it never veers, and if the
+line is blocked (board edge, tree, mountain, building) the upgrade refuses
+and charges nothing. You still choose WHICH end grows by standing near it,
+and the other end is the fallback if yours is blocked.
+
+The direction itself is now yours too. The stub is laid **across the line
+from your hero to where you tap** — stand where you like, point at the thing
+you want blocked, and the blockade goes down crosswise to your aim (at most a
+20° nudge to clear an obstruction; tapping at your own feet falls back to
+facing the enemy). The phone ghost previews the exact bricks.
+
+One deeper fix underneath: the ghost used to validate only the centre point
+while the host laid two full bricks, so a green ghost could still fail on
+Place. Host and phone now share one planner (`planWallStub`), and a test
+sweeps the map verifying the planner's verdict always matches `build()` —
+**a green ghost is a promise.**
+
+Tests are at **209**.

@@ -96,18 +96,23 @@ you sank in, upgrades included:
   🍯 Honey Glazer (70) — slows everything nearby AND leaves it GLAZED,
      taking +35% damage from every source. A force multiplier for the team.
   🏕️ Gummy Barracks (150) — a creep pump with a fuse. Five tough gummies
-     every 7 seconds, seven waves, then it is spent. They MARCH down the
+     every 10 seconds, seven waves, then it is spent. They MARCH down the
      nearest lane rather than loitering, and they outlive the building.
+     TWO per hero, tops, with a 30 s wait between builds. Upgrading is a
+     RELOAD — allowed only once the tube runs dry, it refills all seven
+     waves with tougher gummies and repairs the building.
   🧱 Gumdrop Wall (90) — see below.
 
 The Licorice Launcher is retired; an anti-air-only building was a dead card,
 so the turret inherited the sky.
 
 THE GREAT WALL OF GUMDROP. A wall is ONE building made of many bricks — the
-extra bricks never count against your seven. It starts as a short stub and
-grows two bricks per upgrade off whichever END you are standing nearest, so
-you walk the line you want and it follows, bending gently like a real wall.
-It is narrow enough to snake through tight ground. Ground troops of BOTH
+extra bricks never count against your seven. YOU aim it: the stub is laid
+ACROSS the line from your hero to where you tap, and every upgrade adds two
+bricks to whichever END you are standing nearest, continuing that axis DEAD
+STRAIGHT — a blockade, never a spiral. If the line is blocked by a tree, a
+mountain, a building or the edge of the board, the upgrade refuses and
+charges nothing. Ground troops of BOTH
 sides are stopped cold; fliers sail straight over. Lane towers and turrets
 cannot SHOOT THROUGH it — line of sight is genuinely blocked, which is what
 makes staging a tower fight behind one worth doing. Only creeps, heroes,
@@ -172,6 +177,12 @@ mid-fight, no pauses. Everything has a real HITBOX resolved inside the game
 tick: heroes stop dead against towers and buildings, and creep packs shove
 rather than hard-wall.
 
+Every hero carries real area damage: the melee heroes slam it out around
+themselves (Spin Slash, Cake Quake) while the ranged heroes THROW theirs —
+candy grenades that arc 300 px over walls and trees and blast where they
+land, aimed by the stick, or by the target you tapped when the stick is
+idle. The pure buffs that used to sit in those slots are gone.
+
 Phones are full controllers: joystick, three hero powers, tap-to-attack on
 the live map, and the shop overlay for gear, building, and upgrades. Powers
 fire on touch-down and carry the joystick's live direction with them, so you
@@ -183,7 +194,7 @@ will steer a charge or a leap if the stick is idle.
 Two headless suites, no browser needed:
 
 ```bash
-node test-gg.mjs      # 172 rules checks: waves, economy, walls, fountain, targeting
+node test-gg.mjs      # 209 rules checks: waves, economy, walls, fountain, targeting
 node stress-gg.mjs    # walls thrown across live lanes, long matches, tick budget
 ```
 
