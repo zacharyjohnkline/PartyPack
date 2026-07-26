@@ -1,3 +1,47 @@
+# Round 10 — shirt-tint hardening, big-screen scale, 2.5D walls & gate
+
+Changed: `js/games/rockcandyrally.js`, plus version bumps in `index.html`
+(main.js?v=12) and `js/main.js` (rally import ?v=8). **Replace all three
+files.**
+
+**Mobile shirt colour — three real defects fixed.** The round-9 fix was
+correct but incomplete; each of these could produce untinted shirts on
+phones:
+1. *Illustrator's export formats.* The tint matcher only recognised
+   `#FF00FF` / `#CC00CC` literally, but Illustrator (especially with
+   Internal-CSS styling) writes shorthand `#f0f` / `#c0c`, and sometimes
+   `rgb(255,0,255)` or keyword `magenta`. All forms now match. (This is
+   the most likely culprit — if your shirts were showing raw magenta,
+   this was it.)
+2. *Safari's blob bug.* The raster pipeline revoked each SVG's blob URL
+   in onload; Safari (iPhones) can silently drop such images from later
+   drawImage calls. Sprites now load via data: URLs — no blobs at all.
+3. *Lost messages.* Seat colours rode on a single phase message; if a
+   phone missed it, every rival wore ghost-white forever. The colour list
+   now also rides along on a snapshot every 2 seconds, so phones
+   self-heal.
+
+**Big-screen character scale.** The host camera zooms out to keep the
+whole field in frame, which kept racers small no matter the art size.
+The big screen now draws characters at 1.45× world scale (a standard
+racing-game cheat — the sim is untouched). Phones were already right.
+
+**2.5D walls.** Climbing walls are extruded slabs: a lit top surface
+reaching back across all the lanes, with lane separator lines and the
+front brick face below.
+
+**2.5D start/finish.** A checkered line is painted across the full track
+surface, lane by lane, straddling the seam — plus the flag post on the
+near edge and a matching pennant post up on the far edge.
+
+Verified: Illustrator-style `#f0f` internal-CSS test file tints
+correctly on the phone portrait (zero magenta), blue rival shirt renders
+on a red player's phone camera via the data-URL path, host characters
+measure ~2.1× the previous pixel footprint, wall slab tops and both
+checker colours of the gate present in screenshots, sim suite unchanged.
+
+---
+
 # Round 9 — 2.5D lanes, custom-art tuning, phone shirt-colour fix
 
 Changed: `js/games/rockcandyrally.js`, plus version bumps in `index.html`

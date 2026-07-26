@@ -888,6 +888,7 @@ function snapshot(sim) {
   const bx = sim.boxT.map((t) => (t <= 0 ? 1 : 0));
   const snap = { k: 'snap', t: sim.tick, ph: sim.phase, p, jb, bx, ev: sim.ev, rt: Math.round(sim.raceT * 10) / 10 };
   if (sim.phase === 'count') snap.cd = Math.max(0, Math.round(sim.phaseT * 10) / 10);
+  if (sim.tick % 60 === 0) snap.sm = [...sim.racers.values()].map((r) => ({ seat: r.seat, name: r.name, color: r.color }));
   if (sim.firstFinT !== null && sim.phase === 'race') {
     snap.dnf = Math.max(0, Math.round((DNF_GRACE - (sim.raceT - sim.firstFinT)) * 10) / 10);
   }
@@ -1008,15 +1009,19 @@ function spriteFor(hero, st, color, atLine) {
             w: raw[0].w, h: raw[0].h, stName: matched };
     SPR.tinted.set(ckey, ent);
     raw.forEach((fr, i) => {
-      const txt = fr.txt.replace(/#ff00ff/gi, color).replace(/#cc00cc/gi, shade(color, 0.72));
+      /* match every way Illustrator might write the sentinel colours:
+         #FF00FF, shorthand #F0F, rgb(255,0,255), or the keywords */
+      const txt = fr.txt
+        .replace(/#ff00ff\b|#f0f\b|rgb\(\s*255\s*,\s*0\s*,\s*255\s*\)|\bfuchsia\b|\bmagenta\b/gi, color)
+        .replace(/#cc00cc\b|#c0c\b|rgb\(\s*204\s*,\s*0\s*,\s*204\s*\)/gi, shade(color, 0.72));
       const img = new Image();
-      const url = URL.createObjectURL(new Blob([txt], { type: 'image/svg+xml' }));
       img.onload = () => {
-        URL.revokeObjectURL(url);
         ent.imgs[i] = img;
         ent.ready = ent.imgs.every(Boolean);
       };
-      img.src = url;
+      /* data: URL, not a blob URL — Safari can silently drop blob-backed
+         SVGs from drawImage after revoke, and phones are Safari */
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(txt);
     });
   }
   return ent.ready ? ent : null;
@@ -1454,6 +1459,18 @@ function drawScene(g, W, H, cam, trk, view, opts) {
     const [sx, ty] = w2s(cam, W, H, w.x + off, w.topY);
     const [, by] = w2s(cam, W, H, w.x + off, w.baseY);
     const ww = Math.max(8, WALL_W * 2 * z);
+    const span = LANE_SPAN * z;
+    /* the wall is a slab now: top surface reaching back across the lanes */
+    g.fillStyle = lite(TH.wall[0], 0.34);
+    g.fillRect(sx - ww / 2, ty - span, ww, span);
+    g.strokeStyle = 'rgba(0,0,0,0.18)'; g.lineWidth = Math.max(1, 2 * z);
+    g.strokeRect(sx - ww / 2, ty - span, ww, span);
+    g.strokeStyle = 'rgba(0,0,0,0.06)'; g.lineWidth = 1;
+    for (let k = 1; k < LANES - 1; k++) {
+      const ly = ty - span + k * LANE_DY * z;
+      g.beginPath(); g.moveTo(sx - ww / 2, ly); g.lineTo(sx + ww / 2, ly); g.stroke();
+    }
+    /* front face */
     g.fillStyle = TH.wall[0];
     g.fillRect(sx - ww / 2, ty, ww, by - ty + 6);
     g.fillStyle = '#ffffff55';
@@ -1478,11 +1495,33 @@ function drawScene(g, W, H, cam, trk, view, opts) {
     g.fillText('⤵', sx, sy);
   }
 
-  /* start/finish flag at the seam */
+  /* start/finish at the seam — a checkered line painted across all the
+     lanes, a flag post on the near edge and a matching post on the far */
   for (const off of offs) {
     const fx = off;                       // x = 0 (plus wrap copies)
     if (fx > x0 && fx < x1) {
+      const span = LANE_SPAN * z;
+      const cw = 13;                      // world px per checker column
+      for (let ci = -1; ci <= 0; ci++) {  // two columns straddling the seam
+        for (let k = 0; k < LANES - 1; k++) {
+          const cx0 = fx + ci * cw;
+          const [ax2, ay2] = w2s(cam, W, H, cx0, groundY(trk, wrapX(trk, cx0)) - k * LANE_DY);
+          const [bx3] = w2s(cam, W, H, cx0 + cw, 0);
+          g.fillStyle = (ci + k) % 2 ? '#f4f4f4' : '#2a2a2a';
+          g.globalAlpha = 0.92;
+          g.fillRect(ax2, ay2 - LANE_DY * z, bx3 - ax2, LANE_DY * z);
+        }
+      }
+      g.globalAlpha = 1;
       const [sx, sy] = w2s(cam, W, H, fx, groundY(trk, 0));
+      /* far post, up on the back edge */
+      g.strokeStyle = '#7a5a44'; g.lineWidth = Math.max(2, 3.5 * z);
+      g.beginPath(); g.moveTo(sx, sy - span); g.lineTo(sx, sy - span - 78 * z); g.stroke();
+      g.fillStyle = '#e0455c';
+      g.beginPath(); g.moveTo(sx, sy - span - 78 * z);
+      g.lineTo(sx + 26 * z, sy - span - 68 * z); g.lineTo(sx, sy - span - 58 * z);
+      g.closePath(); g.fill();
+      /* near post with the checkered flag */
       g.strokeStyle = '#5a3a28'; g.lineWidth = Math.max(3, 5 * z);
       g.beginPath(); g.moveTo(sx, sy); g.lineTo(sx, sy - 120 * z); g.stroke();
       const fw = 46 * z, fh = 30 * z, fy0 = sy - 120 * z;
@@ -1534,7 +1573,7 @@ function drawScene(g, W, H, cam, trk, view, opts) {
     const lane = laneOf(seat), lift = lane * LANE_DY * z;
     const [sx, sy0] = w2s(cam, W, H, px, py);
     const sy = sy0 - lift;
-    const scale = Math.max(0.45, z) * laneScale(lane);
+    const scale = Math.max(0.45, z) * laneScale(lane) * (opts.charScale || 1);
     /* contact shadow on the lane's ground sells the depth */
     if (st !== ST.SWIM && st !== ST.FALL) {
       const [, gsy] = w2s(cam, W, H, px, groundY(trk, wrapX(trk, px0)));
@@ -1909,7 +1948,7 @@ function createHost(ctx) {
     const z = Math.min(1.1, Math.max(0.14, Math.min(W / bw, H / bh)));
     const cam = { x: (mnx + mxx) / 2, y: (mny + mxy) / 2 - 40, z };
 
-    drawScene(g, W, H, cam, sim.trk, view, { seatMeta, names: true, floaters, now: performance.now() });
+    drawScene(g, W, H, cam, sim.trk, view, { seatMeta, names: true, floaters, now: performance.now(), charScale: 1.45 });
     floaters = floaters.filter((f) => performance.now() - f.at < 1300);
 
     /* countdown number */
@@ -2321,6 +2360,7 @@ function createController(ctx) {
       cupSel = data.i | 0;
       if (phase === 'pick') renderPick();
     } else if (data.k === 'snap') {
+      if (data.sm) for (const m of data.sm) seatMeta[m.seat] = { name: m.name, color: m.color };
       prev = cur; cur = data; snapAt = performance.now();
       for (const e of data.ev) floaters.push({ ...e, at: performance.now() });
       if (data.ph === 'race' && phase === 'count') { phase = 'race'; $q('.rr-cmsg').textContent = ''; }

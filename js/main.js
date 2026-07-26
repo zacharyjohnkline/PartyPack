@@ -54,7 +54,7 @@ import topBanana from './games/topbanana.js';
 import sweetPath from './games/sweetpath.js';
 import candyKingdoms from './games/candykingdoms.js';
 import gumdropGuardians from './games/gumdropguardians.js?v=3';
-import rockCandyRally from './games/rockcandyrally.js?v=7';
+import rockCandyRally from './games/rockcandyrally.js?v=8';
 
 const GAMES = [topBanana, sweetPath, candyKingdoms, gumdropGuardians, rockCandyRally];
 
