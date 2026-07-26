@@ -1,3 +1,22 @@
+# Round 11 — big screen back to true world scale
+
+Changed: `js/games/rockcandyrally.js`, plus version bumps in `index.html`
+(main.js?v=13) and `js/main.js` (rally import ?v=9). **Replace all three
+files.**
+
+The 1.45× big-screen character boost from round 10 turned out to be an
+overcorrection once the mobile scale settled — the big screen rendered
+racers larger than their surroundings warranted. It's removed: both
+screens now draw characters at identical world-proportional scale
+(SPRITE_ART_H = 99 relative to walls, water and track everywhere); only
+the camera zoom differs between the two. The drawScene charScale hook
+remains in the code should a between-scale nudge ever be wanted.
+
+Verified: host character footprint measures exactly the pre-boost value,
+no other rendering changes, full suite green.
+
+---
+
 # Round 10 — shirt-tint hardening, big-screen scale, 2.5D walls & gate
 
 Changed: `js/games/rockcandyrally.js`, plus version bumps in `index.html`

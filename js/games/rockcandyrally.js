@@ -1948,7 +1948,7 @@ function createHost(ctx) {
     const z = Math.min(1.1, Math.max(0.14, Math.min(W / bw, H / bh)));
     const cam = { x: (mnx + mxx) / 2, y: (mny + mxy) / 2 - 40, z };
 
-    drawScene(g, W, H, cam, sim.trk, view, { seatMeta, names: true, floaters, now: performance.now(), charScale: 1.45 });
+    drawScene(g, W, H, cam, sim.trk, view, { seatMeta, names: true, floaters, now: performance.now() });
     floaters = floaters.filter((f) => performance.now() - f.at < 1300);
 
     /* countdown number */
