@@ -952,12 +952,12 @@ function shade(hex, f = 0.62) {
    ------------------------------------------------------------ */
 const SPRITE_DIR = 'assets/rally/';
 const SPRITE_V = 1;
-const SPRITE_ART_H = 66;   // world px for the full artboard height — tune if art renders too small/large
-const SPR_FILE_STATES = ['run', 'swim', 'climb', 'air', 'slide', 'dizzy', 'done', 'stall', 'fall'];
+const SPRITE_ART_H = 99;   // world px for the full artboard height — tune if art renders too small/large
+const SPR_FILE_STATES = ['idle', 'run', 'swim', 'climb', 'air', 'slide', 'dizzy', 'done', 'stall', 'fall'];
 const SPR_CHAIN = {
   [ST.RUN]: ['run'], [ST.AIR]: ['air'], [ST.CLIMB]: ['climb'], [ST.SWIM]: ['swim'],
   [ST.SLIDE]: ['slide'], [ST.TRIP]: ['dizzy'], [ST.BONK]: ['dizzy'],
-  [ST.DONE]: ['done', 'run'], [ST.STALL]: ['stall', 'dizzy'], [ST.FALL]: ['fall', 'air'],
+  [ST.DONE]: ['done', 'idle', 'run'], [ST.STALL]: ['stall', 'dizzy'], [ST.FALL]: ['fall', 'air'],
 };
 const SPR = { started: false, raw: new Map(), probed: new Set(), tinted: new Map() };
 
@@ -992,12 +992,12 @@ async function loadSpriteState(hero, st) {
 }
 
 /* tinted, rasterised frames for one (hero, state-chain, player colour) */
-function spriteFor(hero, st, color) {
-  const chain = SPR_CHAIN[st] || ['run'];
-  let key = null, fell = false;
+function spriteFor(hero, st, color, atLine) {
+  /* atLine: standing on the start line (countdown) — prefer idle art */
+  const chain = atLine ? ['idle', ...(SPR_CHAIN[st] || ['run'])] : (SPR_CHAIN[st] || ['run']);
+  let key = null, matched = null;
   for (const name of chain) {
-    if (SPR.raw.has(hero + '|' + name)) { key = hero + '|' + name; break; }
-    fell = true;
+    if (SPR.raw.has(hero + '|' + name)) { key = hero + '|' + name; matched = name; break; }
   }
   if (!key) return null;
   const raw = SPR.raw.get(key);
@@ -1005,7 +1005,7 @@ function spriteFor(hero, st, color) {
   let ent = SPR.tinted.get(ckey);
   if (!ent) {
     ent = { imgs: new Array(raw.length).fill(null), n: raw.length, ready: false,
-            w: raw[0].w, h: raw[0].h, fellBack: fell };
+            w: raw[0].w, h: raw[0].h, stName: matched };
     SPR.tinted.set(ckey, ent);
     raw.forEach((fr, i) => {
       const txt = fr.txt.replace(/#ff00ff/gi, color).replace(/#cc00cc/gi, shade(color, 0.72));
@@ -1040,10 +1040,13 @@ function sprIdx(n, step) {
 function drawSpriteRacer(g, sx, sy, s, pr, ent, view, trackX, trk) {
   const st = pr[3];
   const t = (view.tick || 0) * TICK;
-  const step = st === ST.RUN ? Math.floor(trackX / 44) : Math.floor(t * 5);
+  const step = ent.stName === 'idle' ? Math.floor(t * 2.2)            // slow breathing loop
+             : st === ST.RUN ? Math.floor(trackX / 44)
+             : Math.floor(t * 5);
   const f = Math.floor(t * 5) % 2;                     // for the engine hops below
-  /* fell back to run art (e.g. DONE with no done frames): hold the contact pose */
-  const img = ent.imgs[ent.fellBack ? 0 : sprIdx(ent.n, step)];
+  /* substituted run art for a non-run state (e.g. DONE): hold the contact pose */
+  const hold = ent.stName === 'run' && st !== ST.RUN;
+  const img = ent.imgs[hold ? 0 : sprIdx(ent.n, step)];
 
   g.save();
   g.translate(sx, sy);
@@ -1101,7 +1104,8 @@ function poseFor(st, f) {
 }
 
 function drawRacer(g, sx, sy, s, pr, meta, view, trackX, trk) {
-  const spr = spriteFor(pr[8] || 'shelly', pr[3], meta.color);
+  const atLine = view.cd !== undefined && pr[3] === ST.RUN;
+  const spr = spriteFor(pr[8] || 'shelly', pr[3], meta.color, atLine);
   if (spr) {
     drawSpriteRacer(g, sx, sy, s, pr, spr, view, trackX, trk);
   } else {
@@ -1299,6 +1303,24 @@ function paintPortrait(cv, hero, color) {
   }
 }
 
+/* ------------------------------------------------------------
+   2.5D LANES — purely visual depth. The sim stays one-dimensional
+   and perfectly fair; each seat is drawn in its own lane on a
+   widened track surface: back lanes sit higher on screen, render
+   a touch smaller, and paint first so nobody hides anyone.
+   ------------------------------------------------------------ */
+const LANES = 8;
+const LANE_DY = 6;                          // world px between lanes
+const LANE_SPAN = LANE_DY * (LANES - 1);    // full ribbon depth (42)
+const laneOf = (seat) => ((seat % LANES) + LANES) % LANES;
+const laneScale = (lane) => 1 - lane * 0.02;
+
+function lite(hex, t) {                     // mix a #rrggbb toward white
+  const n = parseInt(hex.slice(1), 16);
+  const ch = (v) => Math.round(v + (255 - v) * t);
+  return `rgb(${ch(n >> 16 & 255)},${ch(n >> 8 & 255)},${ch(n & 255)})`;
+}
+
 function w2s(cam, W, H, x, y) {
   return [(x - cam.x) * cam.z + W / 2, (y - cam.y) * cam.z + H / 2];
 }
@@ -1351,7 +1373,30 @@ function drawScene(g, W, H, cam, trk, view, opts) {
     const dirt = g.createLinearGradient(0, H * 0.3, 0, H);
     dirt.addColorStop(0, TH.dirt[0]); dirt.addColorStop(1, TH.dirt[1]);
     g.fillStyle = dirt; g.fill();
-    /* frosting lip */
+
+    /* the 2.5D track surface: a ribbon rising behind the front edge,
+       with faint lane separators — the depth the racers stand across */
+    const ridge = (dy) => {
+      g.beginPath();
+      for (let x = gx0; x <= gx1; x += CELL) {
+        const [rx, ry] = w2s(cam, W, H, x, groundY(trk, x) - dy);
+        x === gx0 ? g.moveTo(rx, ry) : g.lineTo(rx, ry);
+      }
+    };
+    ridge(LANE_SPAN);
+    for (let x = gx1; x >= gx0; x -= CELL) {
+      const [rx, ry] = w2s(cam, W, H, x, groundY(trk, x));
+      g.lineTo(rx, ry);
+    }
+    g.closePath();
+    g.fillStyle = lite(TH.dirt[0], 0.38); g.fill();
+    g.strokeStyle = 'rgba(0,0,0,0.12)'; g.lineWidth = Math.max(1, 2 * z);
+    ridge(LANE_SPAN); g.stroke();                       // back edge
+    g.strokeStyle = 'rgba(0,0,0,0.055)'; g.lineWidth = 1;
+    for (let k = 1; k < LANES - 1; k++) { ridge(k * LANE_DY); g.stroke(); }
+
+    /* frosting lip along the front edge */
+    ridge(0);
     g.strokeStyle = TH.lip; g.lineWidth = Math.max(3, 6 * z); g.stroke();
   }
 
@@ -1388,6 +1433,11 @@ function drawScene(g, W, H, cam, trk, view, opts) {
     const [, fy] = w2s(cam, W, H, w.x0 + off, w.floor + 60);
     g.fillStyle = 'rgba(80,170,255,0.55)';
     g.fillRect(ax, ay, bx2 - ax, Math.max(4, fy - ay));
+    g.globalAlpha = 0.55;                               // the surface reaching back
+    g.fillRect(ax, ay - LANE_SPAN * z, bx2 - ax, LANE_SPAN * z);
+    g.globalAlpha = 1;
+    g.strokeStyle = 'rgba(255,255,255,0.35)'; g.lineWidth = Math.max(1, 2 * z);
+    g.beginPath(); g.moveTo(ax, ay - LANE_SPAN * z); g.lineTo(bx2, ay - LANE_SPAN * z); g.stroke();
     g.strokeStyle = 'rgba(255,255,255,0.8)'; g.lineWidth = Math.max(2, 3 * z);
     g.beginPath();
     const t = (view.tick || 0) * TICK;
@@ -1473,16 +1523,24 @@ function drawScene(g, W, H, cam, trk, view, opts) {
     g.beginPath(); g.arc(sx, sy, rr * 0.35, 2.5, Math.PI * 2.2); g.stroke();
   }
 
-  /* racers — little two-frame sprites, animated by state */
-  if (view.p) for (const pr of view.p) {
+  /* racers — each seat in its own depth lane, far lanes painted first */
+  if (view.p) for (const pr of [...view.p].sort((a, b) => laneOf(b[0]) - laneOf(a[0]))) {
     const [seat, px0, py, st] = pr;
     const meta = opts.seatMeta[seat];
     if (!meta) continue;
     /* nearest wrap representation to the camera */
     const px = px0 + trk.len * Math.round((cam.x - px0) / trk.len);
     if (px < x0 - 80 || px > x1 + 80) continue;
-    const [sx, sy] = w2s(cam, W, H, px, py);
-    const scale = Math.max(0.45, z);
+    const lane = laneOf(seat), lift = lane * LANE_DY * z;
+    const [sx, sy0] = w2s(cam, W, H, px, py);
+    const sy = sy0 - lift;
+    const scale = Math.max(0.45, z) * laneScale(lane);
+    /* contact shadow on the lane's ground sells the depth */
+    if (st !== ST.SWIM && st !== ST.FALL) {
+      const [, gsy] = w2s(cam, W, H, px, groundY(trk, wrapX(trk, px0)));
+      g.fillStyle = 'rgba(0,0,0,0.16)';
+      g.beginPath(); g.ellipse(sx, gsy - lift, 17 * scale, 5 * scale, 0, 0, Math.PI * 2); g.fill();
+    }
     drawRacer(g, sx, sy, scale, pr, meta, view, px0, trk);
     if (pr[4]) {                     // carrying a jawbreaker
       g.font = `${18 * scale}px sans-serif`; g.textAlign = 'center';
@@ -1638,7 +1696,7 @@ function createHost(ctx) {
                      isHost: id === ctx.hostPlayerId(), cup: sim.cup || 0, hero: r.hero || null,
                      cups: CUPS.map((c, i) => ({ i, name: c.name, emoji: c.emoji, diff: c.diff, blurb: c.blurb, tracks: c.tracks.map((t) => TRACKS[t].name) })),
                      chars: CHAR_IDS.map((c) => ({ id: c, ...CHARS[c] })) });
-    ctx.sendTo(id, { k: 'phase', ph: sim.phase, ...(sim.trk ? { segs: sim.trk.segs, tno: sim.trackNo, race: sim.race, total: RACE_COUNT } : {}) });
+    ctx.sendTo(id, { k: 'phase', ph: sim.phase, seats: seatList(), ...(sim.trk ? { segs: sim.trk.segs, tno: sim.trackNo, race: sim.race, total: RACE_COUNT } : {}) });
     if (sim.phase === 'shop') sendWallet(id);
   }
 
@@ -1648,8 +1706,12 @@ function createHost(ctx) {
     ctx.sendTo(id, { k: 'wallet', coins: r.coins, lvl: r.lvl, costs: COSTS, max: LVL_MAX });
   }
 
+  function seatList() {
+    return [...sim.racers.values()].map((r) => ({ seat: r.seat, name: r.name, color: r.color }));
+  }
+
   function broadcastPhase(extra) {
-    ctx.sendAll({ k: 'phase', ph: sim.phase, ...extra });
+    ctx.sendAll({ k: 'phase', ph: sim.phase, seats: seatList(), ...extra });
   }
 
   function beginSeries() {
@@ -2211,6 +2273,7 @@ function createController(ctx) {
       rootEl.style.setProperty('--me-soft', shade(myColor, 0.72));
       renderPick();
     } else if (data.k === 'phase') {
+      if (data.seats) for (const sm of data.seats) seatMeta[sm.seat] = { name: sm.name, color: sm.color };
       phase = data.ph;
       if (data.segs) { trk = buildTrack(data.segs); trk.theme = data.tno || 0; }
       if (phase === 'pick') { show('cpick'); renderPick(); }
@@ -2293,12 +2356,13 @@ function createController(ctx) {
       const w = nextWall(trk, me[1]);
       const d = w ? w.x - wrapX(trk, me[1]) : -1;
       if (w && d > 24 && d < 440) {
+        const zlift = laneOf(mySeat) * LANE_DY * cam.z;   // the zone sits in MY lane
         const strip = (x0, x1, col, lw) => {
           g.strokeStyle = col; g.lineWidth = lw; g.lineCap = 'round';
           g.beginPath();
           for (let x = x0; x <= x1; x += CELL) {
             const [sx, sy] = w2s(cam, W, H, x, groundY(trk, x));
-            x === x0 ? g.moveTo(sx, sy - 3) : g.lineTo(sx, sy - 3);
+            x === x0 ? g.moveTo(sx, sy - 3 - zlift) : g.lineTo(sx, sy - 3 - zlift);
           }
           g.stroke();
         };
@@ -2308,7 +2372,8 @@ function createController(ctx) {
         g.globalAlpha = 0.35 + 0.45 * pulse;
         strip(w.x - 139, w.x - 101, '#fff3a8', 9 * cam.z);         // perfect band
         g.globalAlpha = 1;
-        const [mx, my] = w2s(cam, W, H, w.x - 120, groundY(trk, w.x - 120));
+        const [mx, my0] = w2s(cam, W, H, w.x - 120, groundY(trk, w.x - 120));
+        const my = my0 - laneOf(mySeat) * LANE_DY * cam.z;
         g.font = `800 ${Math.round(15 * cam.z + 6)}px Fredoka, sans-serif`;
         g.textAlign = 'center'; g.textBaseline = 'bottom';
         g.fillStyle = '#ffffffee';
@@ -2319,9 +2384,10 @@ function createController(ctx) {
 
     /* my marker arrow */
     if (me) {
+      const lift = laneOf(mySeat) * LANE_DY * cam.z;
       const [sx, sy] = w2s(cam, W, H, me[1], me[2]);
       g.fillStyle = myColor;
-      g.beginPath(); g.moveTo(sx, sy - 92); g.lineTo(sx - 9, sy - 106); g.lineTo(sx + 9, sy - 106); g.closePath(); g.fill();
+      g.beginPath(); g.moveTo(sx, sy - lift - 92); g.lineTo(sx - 9, sy - lift - 106); g.lineTo(sx + 9, sy - lift - 106); g.closePath(); g.fill();
     }
 
     /* countdown overlay */

@@ -1,3 +1,36 @@
+# Round 9 — 2.5D lanes, custom-art tuning, phone shirt-colour fix
+
+Changed: `js/games/rockcandyrally.js`, plus version bumps in `index.html`
+(main.js?v=11) and `js/main.js` (rally import ?v=7). **Replace all three
+files.** New art file to add: `assets/rally/shelly_idle_0.svg`.
+
+**2.5D depth lanes.** The track is now a surface ribbon rising behind the
+front edge, with faint lane separators, and every seat races in its own
+depth lane: back lanes sit higher on screen, render slightly smaller, and
+are painted back-to-front, with a soft contact shadow under each racer.
+With a full party nobody can hide inside anyone else. This is entirely
+visual — the sim is unchanged and perfectly fair; lanes come from seat
+number, water pools reach back across the ribbon, and the phone's leap
+zone and marker arrow sit in YOUR lane.
+
+**Custom art tuning.** Characters render 1.5× larger (SPRITE_ART_H
+66 → 99). New `idle` state wired: name it `<hero>_idle_0.svg` (add _1 for
+a slow breathing loop — it ping-pongs at a gentle rate). Idle shows while
+standing at the start line during the countdown and after crossing the
+finish (DONE prefers `done` art, then `idle`, then a held run frame).
+
+**Phone shirt colours fixed.** The controller never received the other
+players' colours — every racer on the phone camera wore a ghost-white
+placeholder shirt (the big screen had the real map, which is why it
+worked there). Phase messages now carry the seat list (name + colour), so
+phones tint every racer correctly, custom art and vector alike.
+
+Verified in-browser: red tinted shirt present on the phone camera, idle
+art at the line mid-countdown, 1.5× sprite footprint, surface ribbon
+rendered, zero magenta leakage, and the full sim/bot suite unchanged.
+
+---
+
 # Round 8 — custom SVG character art (Rock Candy Rally)
 
 Changed: `js/games/rockcandyrally.js`, plus version bumps in `index.html`
