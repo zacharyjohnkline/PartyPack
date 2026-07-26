@@ -1,3 +1,38 @@
+# Rock Candy Rally — round 4
+
+Changed: `js/games/rockcandyrally.js`, `css/rockcandyrally.css`, plus version
+bumps in `index.html` (main.js?v=7, rally css?v=4) and `js/main.js`
+(game import ?v=4). **Replace all four files.**
+
+**The timing coach.** Every timing window in the game now has a visual cue
+on the phone, so nothing is guesswork:
+
+- **Rocket start** — a red ring pulses on the JUMP button during the
+  countdown ("Hold it… jump right on GO!"), then flashes green exactly on
+  GO, with a vibration buzz on phones that support it.
+- **Wall leap** — as you approach a wall, the sweet launch zone is painted
+  right on the track in gold (bright pulsing core = perfect leap), with a
+  bouncing "⤴ JUMP" marker at the ideal spot (120px out — the same number
+  the sim scores against).
+- **Wall climb** — while climbing, an approach ring on the JUMP button
+  closes onto a target circle exactly on the beat (driven by the same sim
+  clock the scoring uses, synced via snapshots). The target flashes gold
+  and the phone buzzes softly when the perfect window is open — wider for
+  Grip the gecko, matching his forgiving beat window.
+- **Swimming** — a one-second stroke dial around the JUMP button: a green
+  arc marks the keep-your-combo window (0.34–0.85s between strokes), and a
+  needle sweeps from your last tap. Tap while the needle is in the green.
+  The in-water bar now shows your combo level (×1–×8).
+- **Zippy's momentum press** — the POWER button glows gold while Zippy is
+  airborne with power ready ("Press POWER as you land!"), and the phone
+  buzzes at touchdown — the cue to press for the 1.5× landing boost.
+
+The hint line under the position chip narrates whichever cue is active.
+All cues verified in-browser (ring, dial and zone pixels probed on the
+actual canvases, hint text asserted per state).
+
+---
+
 # Rock Candy Rally — round 3
 
 Changed: `js/games/rockcandyrally.js`, `css/rockcandyrally.css`, plus version

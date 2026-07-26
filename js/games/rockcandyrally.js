@@ -1866,7 +1866,7 @@ const CTRL_HTML = `
     <canvas class="rr-ccam"></canvas>
     <div class="rr-cbtns">
       <button class="rr-cbtn rr-b-throw">⚪<small>THROW</small></button>
-      <button class="rr-cbtn rr-b-jump">🦘<small>JUMP</small></button>
+      <button class="rr-cbtn rr-b-jump">🦘<small>JUMP</small><canvas class="rr-beat" width="128" height="128"></canvas></button>
       <button class="rr-cbtn rr-b-power"><span class="rr-pw-ico">✨</span><small>POWER</small><i class="rr-cd"></i></button>
     </div>
     <button class="rr-hostbtn rr-cendrace hidden">⏭ End race</button>
@@ -1903,6 +1903,9 @@ const CTRL_HTML = `
 function createController(ctx) {
   let canvas, g, raf = 0;
   let mySeat = -1, myColor = '#fff', chars = null, myHero = null, cups = null, cupSel = 0;
+  /* timing-coach state */
+  let beatCv = null, bg2 = null, lastTapAt = -9e9, goFlashAt = 0, prevMySt = -1, lastBuzzCycle = -1, curHint = '';
+  const buzz = (ms) => { try { if (navigator.vibrate) navigator.vibrate(ms); } catch {} };
   let trk = null;
   let prev = null, cur = null, snapAt = 0;
   let floaters = [];
@@ -1924,6 +1927,9 @@ function createController(ctx) {
       el.addEventListener('mousedown', fire);
     };
     press('.rr-b-jump', 'jump');
+    $q('.rr-b-jump').addEventListener('touchstart', () => { lastTapAt = performance.now(); }, { passive: true });
+    $q('.rr-b-jump').addEventListener('mousedown', () => { lastTapAt = performance.now(); });
+    beatCv = $q('.rr-beat'); bg2 = beatCv.getContext('2d');
     press('.rr-b-power', 'power');
     press('.rr-b-throw', 'throw');
 
@@ -2113,6 +2119,36 @@ function createController(ctx) {
     drawScene(g, W, H, cam, trk, view, { seatMeta, names: false, floaters, now: performance.now() });
     floaters = floaters.filter((f) => performance.now() - f.at < 1300);
 
+    /* ---- timing coach: sweet leap zone painted on the ground ---- */
+    let wallHint = false;
+    if (me && !me[9] && (me[3] === ST.RUN || me[3] === ST.AIR)) {
+      const w = nextWall(trk, me[1]);
+      const d = w ? w.x - wrapX(trk, me[1]) : -1;
+      if (w && d > 24 && d < 440) {
+        const strip = (x0, x1, col, lw) => {
+          g.strokeStyle = col; g.lineWidth = lw; g.lineCap = 'round';
+          g.beginPath();
+          for (let x = x0; x <= x1; x += CELL) {
+            const [sx, sy] = w2s(cam, W, H, x, groundY(trk, x));
+            x === x0 ? g.moveTo(sx, sy - 3) : g.lineTo(sx, sy - 3);
+          }
+          g.stroke();
+        };
+        const pulse = 0.55 + 0.45 * Math.sin(performance.now() / 160);
+        g.globalAlpha = 0.55;
+        strip(w.x - 167, w.x - 73, '#ffd93d', 7 * cam.z);          // good band
+        g.globalAlpha = 0.35 + 0.45 * pulse;
+        strip(w.x - 139, w.x - 101, '#fff3a8', 9 * cam.z);         // perfect band
+        g.globalAlpha = 1;
+        const [mx, my] = w2s(cam, W, H, w.x - 120, groundY(trk, w.x - 120));
+        g.font = `800 ${Math.round(15 * cam.z + 6)}px Fredoka, sans-serif`;
+        g.textAlign = 'center'; g.textBaseline = 'bottom';
+        g.fillStyle = '#ffffffee';
+        g.fillText('⤴ JUMP', mx, my - 12 - 4 * pulse);
+        wallHint = me[3] === ST.RUN;
+      }
+    }
+
     /* my marker arrow */
     if (me) {
       const [sx, sy] = w2s(cam, W, H, me[1], me[2]);
@@ -2144,7 +2180,7 @@ function createController(ctx) {
       g.fillStyle = '#4dabf7';
       g.beginPath(); g.roundRect(W / 2 - 86, H - 30, 172 * Math.min(1, me[6] / 8), 14, 7); g.fill();
       g.fillStyle = '#fff'; g.font = '600 12px Fredoka, sans-serif'; g.textAlign = 'center';
-      g.fillText('TAP JUMP IN RHYTHM 🌊', W / 2, H - 44);
+      g.fillText(`COMBO ×${me[6]} 🌊`, W / 2, H - 44);
     }
     /* progress bar — the whole 3-lap race, with lap ticks */
     if (me) {
@@ -2171,6 +2207,87 @@ function createController(ctx) {
       if (done) $q('.rr-cmsg').textContent = '🏁 Finished!';
       $q('.rr-cendrace').classList.toggle('hidden', !(isPartyHost && view.dnf !== undefined));
     }
+
+    drawCoach(me, view, wallHint);
+  }
+
+  /* ------------------------------------------------------------
+     THE TIMING COACH — a ring on the JUMP button that shows every
+     timing window in the game, so nobody has to guess:
+       · countdown: red WAIT ring → green flash right on GO
+       · climbing: an approach ring that lands on the beat
+         (same sim clock as the pulse at the wall)
+       · swimming: a stroke gauge — tap again inside the green arc
+       · Zippy: POWER glows while airborne; press as you land
+     ------------------------------------------------------------ */
+  function drawCoach(me, view, wallHint) {
+    if (!bg2) return;
+    bg2.clearRect(0, 0, 128, 128);
+    const now = performance.now();
+    const st = me ? me[3] : -1;
+    const done = me && me[9] === 1;
+    let hint = '';
+
+    const ring = (r, col, lw, alpha = 1) => {
+      bg2.globalAlpha = alpha; bg2.strokeStyle = col; bg2.lineWidth = lw;
+      bg2.beginPath(); bg2.arc(64, 64, r, 0, Math.PI * 2); bg2.stroke(); bg2.globalAlpha = 1;
+    };
+    const arc = (r, f0, f1, col, lw) => {   // fractions of one second, 12 o'clock start
+      bg2.strokeStyle = col; bg2.lineWidth = lw; bg2.lineCap = 'round';
+      bg2.beginPath(); bg2.arc(64, 64, r, -Math.PI / 2 + f0 * Math.PI * 2, -Math.PI / 2 + f1 * Math.PI * 2); bg2.stroke();
+    };
+
+    if (view && view.cd !== undefined) {
+      /* rocket start */
+      const go = view.cd <= 0.15;
+      if (view.cd > 0.5) goFlashAt = 0;
+      if (go && !goFlashAt) { goFlashAt = now; buzz(60); }
+      ring(46, go ? '#51cf66' : '#ff6b6b', go ? 11 : 6, go ? 1 : 0.55 + 0.4 * Math.sin(now / 130));
+      hint = go ? 'JUMP NOW! 🚀' : 'Hold it… jump right on GO!';
+    } else if (goFlashAt && now - goFlashAt < 350) {
+      ring(46, '#51cf66', 11);                       // the GO window carries into the race
+      hint = 'JUMP NOW! 🚀';
+    } else if (st === ST.CLIMB) {
+      /* the wall beat — same clock the sim scores against */
+      const ph = (((view.tick || 0) * TICK) % PULSE_S) / PULSE_S;
+      const err = Math.min(ph, 1 - ph);
+      const myWin = ((chars || []).find((c) => c.id === (me[8] || myHero)) || { win: 1 }).win || 1;
+      const inWin = err < 0.11 * myWin;
+      if (inWin) {
+        bg2.fillStyle = '#ffd93d44'; bg2.beginPath(); bg2.arc(64, 64, 28, 0, Math.PI * 2); bg2.fill();
+        const cyc = Math.floor(((view.tick || 0) * TICK) / PULSE_S);
+        if (cyc !== lastBuzzCycle) { lastBuzzCycle = cyc; buzz(18); }
+      }
+      ring(30, inWin ? '#ffd93d' : '#ffffff', inWin ? 8 : 4);
+      ring(30 + 32 * (1 - ph), '#ffffff', 3, 0.9);   // closes onto the target at the beat
+      hint = 'Tap JUMP as the ring lands! 🧗';
+    } else if (st === ST.SWIM) {
+      /* stroke gauge: one-second dial, green = keep-the-combo window */
+      const dt = (now - lastTapAt) / 1000;
+      arc(42, RHYTHM_LO, Math.min(1, RHYTHM_HI), '#51cf66', 13);
+      const f = Math.min(1, dt);
+      const good = dt >= RHYTHM_LO && dt <= RHYTHM_HI;
+      arc(42, 0, Math.max(0.02, f), good ? '#ffffff' : dt < RHYTHM_LO ? '#ff8787' : '#ffa94d', 5);
+      bg2.fillStyle = good ? '#51cf66' : '#ffffff88';
+      bg2.beginPath();
+      bg2.arc(64 + 42 * Math.cos(-Math.PI / 2 + f * Math.PI * 2), 64 + 42 * Math.sin(-Math.PI / 2 + f * Math.PI * 2), 6, 0, Math.PI * 2);
+      bg2.fill();
+      hint = good ? 'Stroke NOW — tap JUMP! 🌊' : dt < RHYTHM_LO ? 'Wait for the green…' : 'Tap to paddle! 🌊';
+    }
+
+    /* Zippy's momentum press */
+    if (me && (me[8] || myHero) === 'zippy') {
+      const airborne = st === ST.AIR && me[5] === 0;
+      if (prevMySt === ST.AIR && st === ST.RUN) buzz(25);
+      $q('.rr-b-power').classList.toggle('rr-glow', airborne);
+      if (airborne && !hint) hint = 'Press POWER as you land! ⚡';
+    } else {
+      $q('.rr-b-power').classList.remove('rr-glow');
+    }
+
+    if (!hint && wallHint) hint = 'Leap from the gold zone!';
+    if (me) prevMySt = st;
+    if (!done && hint !== curHint) { curHint = hint; $q('.rr-cmsg').textContent = hint; }
   }
 
   function destroy() { cancelAnimationFrame(raf); }
