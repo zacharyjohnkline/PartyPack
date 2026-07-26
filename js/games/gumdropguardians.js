@@ -4452,6 +4452,7 @@ const CTRL_HTML = `
       <span class="gg-cs-lvl"></span>
       <span class="gg-cs-coins"></span>
       <div class="gg-cs-hpwrap"><div class="gg-cs-hp"></div><div class="gg-cs-xp"></div></div>
+      <button class="gg-homebtn hidden" title="End the game for everyone">⌂</button>
     </div>
     <div class="gg-canvaswrap"><canvas class="gg-cmap"></canvas></div>
 
@@ -4541,6 +4542,13 @@ function createController(ctx) {
     ctx.root.innerHTML = CTRL_HTML;
     canvas = $q('.gg-cmap');
     g = canvas.getContext('2d');
+
+    /* the host's ⌂ in the status row clicks the shell's End-game button
+       through (its confirm dialog does the asking); the header copy hides
+       while the game runs so there's only one, well-placed way out */
+    document.getElementById('ctrl-host-exit')?.classList.add('gg-hide-shell-exit');
+    $q('.gg-homebtn').addEventListener('click', () =>
+      document.getElementById('ctrl-host-exit')?.click());
 
     /* each side has its own hero roster — swap the cards when the team flips */
     const renderRoster = () => {
@@ -4788,7 +4796,12 @@ function createController(ctx) {
       world = buildWorld(data.seed);
       seats = data.seats || [];
       if (data.mySeat !== undefined) mySeat = data.mySeat;
-      if (data.isHost !== undefined) { isPartyHost = !!data.isHost; renderSizes(); }
+      if (data.isHost !== undefined) {
+        isPartyHost = !!data.isHost;
+        renderSizes();
+        const hb = $q('.gg-homebtn'); if (hb) hb.classList.toggle('hidden', !isPartyHost);
+        document.getElementById('ctrl-host-exit')?.classList.add('gg-hide-shell-exit');
+      }
       return;
     }
     if (data.k === 'toast') { toast(data.msg); return; }
@@ -5196,6 +5209,7 @@ function createController(ctx) {
     cancelAnimationFrame(raf);
     window.removeEventListener('resize', onResize);
     if (ro) ro.disconnect();
+    document.getElementById('ctrl-host-exit')?.classList.remove('gg-hide-shell-exit');
     ctx.root.innerHTML = '';
   }
 
