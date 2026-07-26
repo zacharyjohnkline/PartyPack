@@ -4113,11 +4113,11 @@ function createHost(ctx) {
     };
     if (playerId) {
       const sp = sim.players.get(playerId);
-      ctx.sendTo(playerId, { ...msg, mySeat: sp ? sp.seat : -1 });
+      ctx.sendTo(playerId, { ...msg, mySeat: sp ? sp.seat : -1, isHost: playerId === ctx.hostPlayerId() });
     } else {
       for (const p of ctx.players()) {
         const sp = sim.players.get(p.id);
-        ctx.sendTo(p.id, { ...msg, mySeat: sp ? sp.seat : -1 });
+        ctx.sendTo(p.id, { ...msg, mySeat: sp ? sp.seat : -1, isHost: p.id === ctx.hostPlayerId() });
       }
     }
   }
@@ -4351,6 +4351,12 @@ function createHost(ctx) {
     const p = sim.players.get(playerId);
     switch (data.k) {
       case 'pick': pickHero(sim, playerId, data.hero, data.team === 1 ? 1 : 0); sendInit(playerId); break;
+      case 'size':
+        if (playerId === ctx.hostPlayerId() && sim.phase === 'pick') {
+          sim.teamSize = clamp(data.n | 0, 1, TEAM_SIZE_MAX);
+          paintSizes();
+        }
+        break;
       case 'mv': p.dir = { x: +data.x || 0, y: +data.y || 0 }; break;
       case 'ab':
         castAbility(sim, playerId, clamp(data.i | 0, 0, 2),
@@ -4430,17 +4436,22 @@ const CTRL_HTML = `
       <button class="gg-teambtn gg-teambtn-on" data-team="0">🍬 Gummi Kingdom</button>
       <button class="gg-teambtn" data-team="1">👹 Rock Candy Horde</button>
     </div>
+    <div class="gg-csizes hidden">
+      <span class="gg-csizes-lbl">Match size (you're the host):</span>
+      <div class="gg-csizes-row"></div>
+      <span class="gg-csizes-note"></span>
+    </div>
     <div class="gg-cpick-grid"></div>
   </div>
 
   <!-- in-game -->
   <div class="gg-cgame hidden">
     <div class="gg-cstatus">
+      <button class="gg-shopbtn">🎒</button>
       <span class="gg-cs-wave"></span>
       <span class="gg-cs-lvl"></span>
       <span class="gg-cs-coins"></span>
       <div class="gg-cs-hpwrap"><div class="gg-cs-hp"></div><div class="gg-cs-xp"></div></div>
-      <button class="gg-shopbtn">🎒</button>
     </div>
     <div class="gg-canvaswrap"><canvas class="gg-cmap"></canvas></div>
 
@@ -4495,6 +4506,33 @@ function createController(ctx) {
   let onResize, ro = null;
   let fog = null, fogVSeen = -1;
   const fogCache = { v: -1, cnv: null };
+  let isPartyHost = false, sizeSel = TEAM_SIZE_DEFAULT, sizeBots = -1;
+
+  /* host-only 1v1…6v6 picker on the phone; everyone else just picks a hero */
+  function renderSizes() {
+    const wrap = ctx.root.querySelector('.gg-csizes');
+    if (!wrap) return;
+    wrap.classList.toggle('hidden', !isPartyHost);
+    if (!isPartyHost) return;
+    const row = wrap.querySelector('.gg-csizes-row');
+    if (!row.children.length) {
+      row.innerHTML = Array.from({ length: TEAM_SIZE_MAX }, (_, i) =>
+        `<button class="gg-csize" data-n="${i + 1}">${i + 1}v${i + 1}</button>`).join('');
+      for (const b of row.querySelectorAll('.gg-csize')) {
+        b.addEventListener('click', () => {
+          sizeSel = +b.dataset.n;
+          ctx.send({ k: 'size', n: sizeSel });
+          renderSizes();
+        });
+      }
+    }
+    for (const b of row.querySelectorAll('.gg-csize')) {
+      b.classList.toggle('gg-csize-on', +b.dataset.n === sizeSel);
+    }
+    wrap.querySelector('.gg-csizes-note').textContent =
+      sizeBots > 0 ? `🤖 ${sizeBots} robot${sizeBots === 1 ? '' : 's'} will fill the empty chairs`
+      : sizeBots === 0 ? 'every chair taken by a person' : '';
+  }
 
   const $q = (s) => ctx.root.querySelector(s);
   const disc0 = () => (myHero && myHero.discount ? myHero.discount : 1);
@@ -4750,6 +4788,7 @@ function createController(ctx) {
       world = buildWorld(data.seed);
       seats = data.seats || [];
       if (data.mySeat !== undefined) mySeat = data.mySeat;
+      if (data.isHost !== undefined) { isPartyHost = !!data.isHost; renderSizes(); }
       return;
     }
     if (data.k === 'toast') { toast(data.msg); return; }
@@ -4757,6 +4796,9 @@ function createController(ctx) {
     if (data.fog && data.fogV !== fogVSeen) { fogVSeen = data.fogV; fog = unpackFog(data.fog); }
     prev = cur;
     cur = { at: performance.now(), snap: data };
+    if (data.ph === 'pick' && (data.ts !== sizeSel || data.tsBots !== sizeBots)) {
+      sizeSel = data.ts; sizeBots = data.tsBots; renderSizes();
+    }
     const now = performance.now();
     for (const f of data.fx) fxLive.push({ ...f, t0: now });
     fxLive = fxLive.filter((f) => now - f.t0 < 2000);

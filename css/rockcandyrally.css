@@ -130,9 +130,14 @@
    controller (phone) — lives INSIDE the shell's game area, below
    the name bar; tinted with the player's own colour via --me vars
    ============================================================ */
+/* the shell's name bar hides while the game runs — full screen, but the
+   game must clear the phone notch on its own */
+.ctrl-header.rr-noheader { display: none; }
+
 .rr-ctrl {
-  position: relative;              /* never overlays the shell header */
+  position: relative;
   flex: 1 1 auto; min-height: 0;
+  padding-top: env(safe-area-inset-top);
   display: flex; flex-direction: column;
   margin: -16px;
   margin-bottom: calc(-16px - env(safe-area-inset-bottom));
@@ -223,13 +228,18 @@
   position: absolute; left: 0; right: 0; bottom: 0; height: 0%;
   background: #00000055; pointer-events: none;
 }
-.rr-hostbtn {
-  position: absolute; top: 42px; right: 12px; z-index: 5;
-  border: none; border-radius: 999px; padding: 7px 13px;
-  font-family: 'Fredoka', sans-serif; font-weight: 700; font-size: 13px;
-  color: #fff; background: #00000055; box-shadow: inset 0 0 0 2px #ffffff55;
+/* host controls sit IN the HUD row — in normal flow, they can't cover anything */
+.rr-hudbtn {
+  flex: 0 0 auto; border: none; border-radius: 999px; padding: 5px 12px;
+  font-family: 'Fredoka', sans-serif; font-weight: 800; font-size: 15px;
+  color: #fff; background: #00000042; box-shadow: inset 0 0 0 2px #ffffff44;
 }
-.rr-hostbtn:active { transform: scale(0.94); }
+.rr-hudbtn:active { transform: scale(0.92); }
+.rr-exitlink {
+  border: none; background: none; color: #ffffffb0;
+  font-family: 'Fredoka', sans-serif; font-weight: 700; font-size: 13px;
+  padding: 4px; text-decoration: underline;
+}
 
 /* pit stop */
 .rr-shop-head { display: flex; align-items: center; justify-content: space-between; }

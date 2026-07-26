@@ -1854,6 +1854,7 @@ const CTRL_HTML = `
     </div>
     <div class="rr-cfoot">
       <button class="rr-btn rr-cstart hidden">🏁 Start the series!</button>
+      <button class="rr-exitlink rr-cexit2 hidden">⌂ End game for everyone</button>
     </div>
   </div>
 
@@ -1862,6 +1863,8 @@ const CTRL_HTML = `
       <span class="rr-cpos"></span>
       <span class="rr-cmsg"></span>
       <span class="rr-citem"></span>
+      <button class="rr-hudbtn rr-cendrace hidden" title="End the race for the stragglers">⏭</button>
+      <button class="rr-hudbtn rr-cexit hidden" title="End the game for everyone">⌂</button>
     </div>
     <canvas class="rr-ccam"></canvas>
     <div class="rr-cbtns">
@@ -1869,7 +1872,6 @@ const CTRL_HTML = `
       <button class="rr-cbtn rr-b-jump">🦘<small>JUMP</small><canvas class="rr-beat" width="128" height="128"></canvas></button>
       <button class="rr-cbtn rr-b-power"><span class="rr-pw-ico">✨</span><small>POWER</small><i class="rr-cd"></i></button>
     </div>
-    <button class="rr-hostbtn rr-cendrace hidden">⏭ End race</button>
   </div>
 
   <div class="rr-cshop hidden">
@@ -1918,7 +1920,17 @@ function createController(ctx) {
 
   function start() {
     ctx.root.innerHTML = CTRL_HTML;
+    /* the racer IS the identity here (name on seat, phone tinted in your
+       colour) — hide the shell's name bar so the game gets the full screen */
+    document.querySelector('.ctrl-header')?.classList.add('rr-noheader');
     canvas = $q('.rr-ccam'); g = canvas.getContext('2d');
+
+    /* the shell's End-game button is hidden with the bar — the host's ⌂
+       buttons in the game UI click it through, confirm dialog and all */
+    const shellExit = () => document.getElementById('ctrl-host-exit')?.click();
+    for (const sel of ['.rr-cexit', '.rr-cexit2']) {
+      const b = $q(sel); if (b) b.addEventListener('click', shellExit);
+    }
 
     const press = (sel, k) => {
       const el = $q(sel);
@@ -2000,6 +2012,8 @@ function createController(ctx) {
       ? 'You are the party host — pick the cup, then start when everyone is ready.'
       : 'The party host picks the cup and starts the series.';
     $q('.rr-cstart').classList.toggle('hidden', !(isPartyHost && myHero));
+    $q('.rr-cexit2').classList.toggle('hidden', !isPartyHost);
+    $q('.rr-cexit').classList.toggle('hidden', !isPartyHost);
   }
 
     function renderShop() {
@@ -2290,7 +2304,10 @@ function createController(ctx) {
     if (!done && hint !== curHint) { curHint = hint; $q('.rr-cmsg').textContent = hint; }
   }
 
-  function destroy() { cancelAnimationFrame(raf); }
+  function destroy() {
+    cancelAnimationFrame(raf);
+    document.querySelector('.ctrl-header')?.classList.remove('rr-noheader');
+  }
 
   return { start, onMessage, destroy };
 }
