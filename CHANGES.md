@@ -1,3 +1,47 @@
+# Round 8 — custom SVG character art (Rock Candy Rally)
+
+Changed: `js/games/rockcandyrally.js`, plus version bumps in `index.html`
+(main.js?v=10) and `js/main.js` (rally import ?v=6). **Replace all three
+files**, then add your art:
+
+**WHERE THE ART GOES: create a folder `assets/rally/` next to
+`index.html` and drop the svg files straight in** — for the turtle:
+`shelly_run_0/1/2.svg`, `shelly_swim_0/1/2.svg`, `shelly_climb_0/1/2.svg`,
+`shelly_air_0.svg`, `shelly_slide_0.svg`, `shelly_dizzy_0.svg`.
+
+How it works:
+- The loader probes for files per hero, per state, and counts consecutive
+  frames from `_0`. Whatever exists overrides the built-in vector art for
+  exactly that hero+state; everything else (gecko, finn, zippy, and any
+  missing state) stays vector. Delete a file and the vectors return.
+- Missing states fall back sensibly: DONE → run contact frame,
+  STALL → dizzy, FALL → air.
+- Shirt tinting: `#FF00FF` → the player's colour, `#CC00CC` → its darker
+  trim shade, replaced in the svg text before rasterising, cached per
+  player colour. Case-insensitive, works with attribute or style fills.
+- 3-frame cycles play ping-pong (0-1-2-1-…); run cadence is
+  distance-driven so all heroes stride at the same rate.
+- Sprite slides don't spin — the frame settles onto the hill's slope, so
+  the turtle's butt-slide leans with the terrain.
+- The run bob now lives in the art (the engine's procedural bob is off for
+  sprite frames); swim/dizzy rotations are still applied by the engine, so
+  frames stay drawn upright as discussed.
+- The pick-card portraits use run frame 1 and repaint themselves when the
+  art finishes loading.
+- `SPRITE_V` (top of rockcandyrally.js) is the cache-buster for the art
+  itself: bump it whenever you REPLACE an svg phones have already seen.
+- `SPRITE_ART_H` (same spot) sets how tall the artboard renders in the
+  world (66px). If your characters come out too small or too large next
+  to the vector heroes, nudge this one number.
+
+Verified end-to-end with stand-in svgs built to the same spec (120×168
+artboard, sentinel magentas, feet-line anchoring): sprite drawn in-race,
+zero magenta leakage, shirts tinted per player, portraits repaint on both
+screens after async load, vector heroes coexist, and the sim/bot suite is
+unchanged. The stand-ins are not shipped — your art is the only art.
+
+---
+
 # UI round 7 — glass character cards in Rock Candy Rally
 
 Changed: `css/rockcandyrally.css`, plus the version bump in `index.html`

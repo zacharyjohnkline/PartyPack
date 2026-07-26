@@ -928,6 +928,142 @@ function shade(hex, f = 0.62) {
      back extras → far arm → legs → SHIRT → head → near arm
    ------------------------------------------------------------ */
 
+/* ------------------------------------------------------------
+   CUSTOM SPRITE ART (SVG) — hand-drawn frames override the
+   built-in vector characters, per hero, per state.
+
+   HOW TO USE: create a folder  assets/rally/  next to index.html
+   and drop in files named  <hero>_<state>_<frame>.svg
+     heroes:  shelly  gecko  finn  zippy
+     states:  run swim climb air slide dizzy done stall fall
+     frames:  0, 1, 2 … (consecutive; the loader counts them)
+   Rules the art must follow: one shared artboard for every frame,
+   character upright facing right, feet-line on the bottom edge,
+   balance point on the horizontal centre. The shirt is drawn in
+   #FF00FF with #CC00CC trim — both get re-coloured per player.
+
+   Any state with no files falls back: done→run, stall→dizzy,
+   fall→air — and any hero or state with no art at all uses the
+   built-in vector characters. Delete a file, the vectors return.
+
+   When you UPDATE an svg that phones have already seen, bump
+   SPRITE_V below so they re-download (same rule as everything
+   else in this project).
+   ------------------------------------------------------------ */
+const SPRITE_DIR = 'assets/rally/';
+const SPRITE_V = 1;
+const SPRITE_ART_H = 66;   // world px for the full artboard height — tune if art renders too small/large
+const SPR_FILE_STATES = ['run', 'swim', 'climb', 'air', 'slide', 'dizzy', 'done', 'stall', 'fall'];
+const SPR_CHAIN = {
+  [ST.RUN]: ['run'], [ST.AIR]: ['air'], [ST.CLIMB]: ['climb'], [ST.SWIM]: ['swim'],
+  [ST.SLIDE]: ['slide'], [ST.TRIP]: ['dizzy'], [ST.BONK]: ['dizzy'],
+  [ST.DONE]: ['done', 'run'], [ST.STALL]: ['stall', 'dizzy'], [ST.FALL]: ['fall', 'air'],
+};
+const SPR = { started: false, raw: new Map(), probed: new Set(), tinted: new Map() };
+
+function initSprites() {
+  if (SPR.started || typeof fetch !== 'function') return;
+  SPR.started = true;
+  for (const hero of CHAR_IDS) {
+    for (const st of SPR_FILE_STATES) loadSpriteState(hero, st);
+  }
+}
+
+async function loadSpriteState(hero, st) {
+  const key = hero + '|' + st;
+  const frames = [];
+  try {
+    for (let i = 0; i < 6; i++) {
+      const r = await fetch(`${SPRITE_DIR}${hero}_${st}_${i}.svg?v=${SPRITE_V}`);
+      if (!r.ok) break;
+      let txt = await r.text();
+      if (!/<svg[^>]*viewBox/i.test(txt)) break;          // not an svg we can size
+      /* give the svg explicit pixel dimensions from its viewBox so the
+         browser rasterises it crisply at the artboard's native size */
+      const vb = txt.match(/viewBox\s*=\s*"([\d.\s-]+)"/i)[1].trim().split(/\s+/).map(Number);
+      if (!/<svg[^>]*\swidth\s*=/i.test(txt)) {
+        txt = txt.replace(/<svg/i, `<svg width="${vb[2]}" height="${vb[3]}"`);
+      }
+      frames.push({ txt, w: vb[2], h: vb[3] });
+    }
+  } catch { /* offline / no folder — vectors carry on */ }
+  if (frames.length) SPR.raw.set(key, frames);
+  SPR.probed.add(key);
+}
+
+/* tinted, rasterised frames for one (hero, state-chain, player colour) */
+function spriteFor(hero, st, color) {
+  const chain = SPR_CHAIN[st] || ['run'];
+  let key = null, fell = false;
+  for (const name of chain) {
+    if (SPR.raw.has(hero + '|' + name)) { key = hero + '|' + name; break; }
+    fell = true;
+  }
+  if (!key) return null;
+  const raw = SPR.raw.get(key);
+  const ckey = key + '|' + color;
+  let ent = SPR.tinted.get(ckey);
+  if (!ent) {
+    ent = { imgs: new Array(raw.length).fill(null), n: raw.length, ready: false,
+            w: raw[0].w, h: raw[0].h, fellBack: fell };
+    SPR.tinted.set(ckey, ent);
+    raw.forEach((fr, i) => {
+      const txt = fr.txt.replace(/#ff00ff/gi, color).replace(/#cc00cc/gi, shade(color, 0.72));
+      const img = new Image();
+      const url = URL.createObjectURL(new Blob([txt], { type: 'image/svg+xml' }));
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        ent.imgs[i] = img;
+        ent.ready = ent.imgs.every(Boolean);
+      };
+      img.src = url;
+    });
+  }
+  return ent.ready ? ent : null;
+}
+
+/* whether waiting could still change the picture for (hero, RUN) portraits */
+function spritesPending(hero) {
+  if (!SPR.started) return false;
+  if (!SPR.probed.has(hero + '|run')) return true;                 // still probing
+  const raw = SPR.raw.get(hero + '|run');
+  return !!raw;                                                    // found: raster may still be inflight
+}
+
+/* ping-pong frame index: 0 1 2 1 0 1 2 … (plain 0/1 flip for n=2) */
+function sprIdx(n, step) {
+  if (n <= 1) return 0;
+  const p = 2 * n - 2, k = step % p;
+  return k < n ? k : p - k;
+}
+
+function drawSpriteRacer(g, sx, sy, s, pr, ent, view, trackX, trk) {
+  const st = pr[3];
+  const t = (view.tick || 0) * TICK;
+  const step = st === ST.RUN ? Math.floor(trackX / 44) : Math.floor(t * 5);
+  const f = Math.floor(t * 5) % 2;                     // for the engine hops below
+  /* fell back to run art (e.g. DONE with no done frames): hold the contact pose */
+  const img = ent.imgs[ent.fellBack ? 0 : sprIdx(ent.n, step)];
+
+  g.save();
+  g.translate(sx, sy);
+  if (st === ST.RUN) g.rotate(0.09);                   // lean only — the bob lives in the art
+  if (st === ST.AIR) g.rotate(-0.08);
+  if (st === ST.SWIM) { g.rotate(-1.15); g.translate(6 * s, 6 * s); }
+  if (st === ST.CLIMB) g.translate(5 * s, 0);
+  if (st === ST.TRIP || st === ST.BONK) g.rotate(Math.PI / 2 * 0.85);
+  if (st === ST.STALL) g.translate((f ? 2 : -2) * s, 0);
+  if (st === ST.DONE) g.translate(0, (f ? -3.5 : 0) * s);
+  if (st === ST.SLIDE && trk) {
+    /* no spin for drawn slides — settle onto the hill's slope instead */
+    const x = pr[1], d = 18;
+    g.rotate(Math.atan2(groundY(trk, x + d) - groundY(trk, x - d), 2 * d));
+  }
+  const dh = SPRITE_ART_H * s, dw = dh * (ent.w / ent.h);
+  g.drawImage(img, -dw / 2, -dh, dw, dh);
+  g.restore();
+}
+
 const HERO_PAL = {
   shelly: { skin: '#7ac74f', dark: '#5a9e38', a: '#8a5a33', b: '#6d4526', c: '#a9713f' },
   gecko:  { skin: '#3ddc97', dark: '#2ab77a', a: '#c8f7e4', b: '#ffd166', c: '#1f8f60' },
@@ -964,7 +1100,25 @@ function poseFor(st, f) {
   }
 }
 
-function drawRacer(g, sx, sy, s, pr, meta, view, trackX) {
+function drawRacer(g, sx, sy, s, pr, meta, view, trackX, trk) {
+  const spr = spriteFor(pr[8] || 'shelly', pr[3], meta.color);
+  if (spr) {
+    drawSpriteRacer(g, sx, sy, s, pr, spr, view, trackX, trk);
+  } else {
+    drawVectorRacer(g, sx, sy, s, pr, meta, view, trackX);
+  }
+  /* state garnish — shared by both art paths */
+  const st = pr[3];
+  const gf = Math.floor((view.tick || 0) * TICK * 5) % 2;
+  const garnish = { [ST.TRIP]: gf ? '💫' : '✨', [ST.BONK]: gf ? '💫' : '✨',
+                    [ST.FALL]: '💨', [ST.STALL]: '💦' };
+  if (garnish[st]) {
+    g.font = `${22 * s}px sans-serif`; g.textAlign = 'center';
+    g.fillText(garnish[st], sx + (st === ST.STALL ? 20 * s : 0), sy - 66 * s);
+  }
+}
+
+function drawVectorRacer(g, sx, sy, s, pr, meta, view, trackX) {
   const st = pr[3], hero = pr[8] || 'shelly';
   const t = (view.tick || 0) * TICK;
   const f = st === ST.RUN ? Math.floor(trackX / 44) % 2 : Math.floor(t * 5) % 2;
@@ -1129,14 +1283,6 @@ function drawRacer(g, sx, sy, s, pr, meta, view, trackX) {
   cap(nearArm, 6, P.skin);
 
   g.restore();
-
-  /* state garnish, drawn un-transformed */
-  const garnish = { [ST.TRIP]: f ? '💫' : '✨', [ST.BONK]: f ? '💫' : '✨',
-                    [ST.FALL]: '💨', [ST.STALL]: '💦' };
-  if (garnish[st]) {
-    g.font = `${22 * s}px sans-serif`; g.textAlign = 'center';
-    g.fillText(garnish[st], sx + (st === ST.STALL ? 20 * s : 0), sy - 66 * s);
-  }
 }
 
 /* paint a hero portrait (running pose, frame 1) onto a small canvas */
@@ -1144,7 +1290,13 @@ function paintPortrait(cv, hero, color) {
   const g = cv.getContext('2d');
   g.clearRect(0, 0, cv.width, cv.height);
   drawRacer(g, cv.width / 2 - 2, cv.height - 5, cv.height / 88,
-            [0, 0, 0, ST.RUN, 0, 0, 0, 0, hero, 0, 0], { color }, { tick: 0 }, 44);
+            [0, 0, 0, ST.RUN, 0, 0, 0, 0, hero, 0, 0], { color }, { tick: 0 }, 44, null);
+  /* custom art loads async — repaint this card when it lands (run frame 1,
+     via trackX=44, is the pick-card pose) */
+  if (spritesPending(hero) && !spriteFor(hero, ST.RUN, color)) {
+    clearTimeout(cv._sprRetry);
+    cv._sprRetry = setTimeout(() => { if (cv.isConnected) paintPortrait(cv, hero, color); }, 450);
+  }
 }
 
 function w2s(cam, W, H, x, y) {
@@ -1331,7 +1483,7 @@ function drawScene(g, W, H, cam, trk, view, opts) {
     if (px < x0 - 80 || px > x1 + 80) continue;
     const [sx, sy] = w2s(cam, W, H, px, py);
     const scale = Math.max(0.45, z);
-    drawRacer(g, sx, sy, scale, pr, meta, view, px0);
+    drawRacer(g, sx, sy, scale, pr, meta, view, px0, trk);
     if (pr[4]) {                     // carrying a jawbreaker
       g.font = `${18 * scale}px sans-serif`; g.textAlign = 'center';
       g.fillText('⚪', sx + 24 * scale, sy - 10 * scale);
@@ -1459,6 +1611,7 @@ function createHost(ctx) {
   }
 
   function start() {
+    initSprites();
     ctx.root.innerHTML = HOST_HTML;
     canvas = $q('.rr-stage'); g = canvas.getContext('2d');
     mini = $q('.rr-minimap'); mg = mini.getContext('2d');
@@ -1919,6 +2072,7 @@ function createController(ctx) {
   const $q = (s) => ctx.root.querySelector(s);
 
   function start() {
+    initSprites();
     ctx.root.innerHTML = CTRL_HTML;
     /* the racer IS the identity here (name on seat, phone tinted in your
        colour) — hide the shell's name bar so the game gets the full screen */
