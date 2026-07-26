@@ -161,76 +161,152 @@ const ST = { RUN: 0, AIR: 1, CLIMB: 2, SWIM: 3, SLIDE: 4, TRIP: 5, DONE: 6, BONK
    ============================================================ */
 const CELL = 8;                    // heightfield sample spacing
 
-/* ---------- the cup: four themed courses, one per race ---------- */
-const THEMES = [
-  { name: 'Gumdrop Meadows',  sky: ['#ffe3f1', '#ffd1e8', '#ffeef7'], hills: ['#f7bfe0', '#f3a9d4'],
-    dirt: ['#b97a4e', '#8a5433'], lip: '#7fd97f', wall: ['#e05c7a', '#c9385c'] },
-  { name: 'Soda Lakes',       sky: ['#dff4ff', '#c8ecff', '#eefaff'], hills: ['#a8dcf0', '#8fd0ea'],
-    dirt: ['#e0b56b', '#b98c47'], lip: '#ffe08a', wall: ['#4dabf7', '#2b8ad6'] },
-  { name: 'Rock Candy Cliffs', sky: ['#efe4ff', '#e2d0ff', '#f6efff'], hills: ['#cdb3ef', '#b898e3'],
-    dirt: ['#8d7b9e', '#655672'], lip: '#d9c2ff', wall: ['#9775fa', '#7048e8'] },
-  { name: 'Sour Summit',      sky: ['#fff3d6', '#ffe3ad', '#fff8e8'], hills: ['#ffd27f', '#f7b955'],
-    dirt: ['#7fae5a', '#5c8440'], lip: '#b2f2bb', wall: ['#94d82d', '#66a80f'] },
-];
-
-function makeSegs(trackNo = 0) {
+/* ------------------------------------------------------------
+   THE CUPS — three championships of four courses each, Mario
+   Kart style. Each course is a seg-list builder plus a palette;
+   difficulty climbs from the Sugar Cup to the Sour Cup.
+   ------------------------------------------------------------ */
+function segDSL() {
   const R = (a, b) => a + Math.random() * (b - a);
   const RI = (a, b) => Math.round(R(a, b));
   const segs = [];
-  const flat  = (a, b) => segs.push({ t: 'flat', len: RI(a, b) });
-  const pit   = (a, b) => segs.push({ t: 'pit',  len: RI(a, b) });
-  const wall  = (a, b) => segs.push({ t: 'wall', h: RI(a, b) });
-  const water = (a, b, d0, d1) => segs.push({ t: 'water', len: RI(a, b), depth: RI(d0, d1) });
-  const down  = (a, b, h0, h1) => segs.push({ t: 'down', len: RI(a, b), h: RI(h0, h1) });
-  const hill = (h) => {            // an up-and-over: climb, crest, big descent
-    segs.push({ t: 'up',   len: RI(420, 560), h });
-    segs.push({ t: 'down', len: RI(640, 880), h: h + RI(40, 120) });
+  return {
+    segs, RI,
+    flat: (a, b) => segs.push({ t: 'flat', len: RI(a, b) }),
+    pit: (a, b) => segs.push({ t: 'pit', len: RI(a, b) }),
+    wall: (a, b) => segs.push({ t: 'wall', h: RI(a, b) }),
+    water: (a, b, d0 = 90, d1 = 130) => segs.push({ t: 'water', len: RI(a, b), depth: RI(d0, d1) }),
+    down: (a, b, h0, h1) => segs.push({ t: 'down', len: RI(a, b), h: RI(h0, h1) }),
+    hill: (h) => {
+      segs.push({ t: 'up', len: RI(420, 560), h });
+      segs.push({ t: 'down', len: RI(640, 880), h: h + RI(40, 120) });
+    },
   };
+}
 
-  const t = ((trackNo % THEMES.length) + THEMES.length) % THEMES.length;
-  if (t === 0) {          /* Gumdrop Meadows — a bit of everything, gently */
-    flat(540, 640);
-    hill(RI(170, 210));
-    flat(320, 400); pit(125, 150); flat(250, 320);
-    wall(260, 300);
-    flat(440, 540);
-    water(620, 760, 90, 120);
-    flat(300, 360); pit(135, 160); flat(250, 300);
-    hill(RI(200, 250));
-    flat(460, 560);
-  } else if (t === 1) {   /* Soda Lakes — the swimmer's course */
-    flat(520, 600);
-    water(780, 920, 100, 130);
-    flat(280, 340); pit(145, 175); flat(280, 340);
-    hill(RI(160, 200));
-    flat(260, 320);
-    wall(280, 330);
-    flat(440, 520);
-    water(700, 840, 100, 130);
-    flat(280, 330); pit(130, 155); flat(430, 500);
-  } else if (t === 2) {   /* Rock Candy Cliffs — two BIG climbs */
-    flat(500, 580);
-    wall(400, 460);
-    down(520, 620, 330, 380);      // sweeping descent off the first cliff
-    flat(300, 380);
-    hill(RI(190, 230));
-    flat(230, 290); pit(150, 175); flat(230, 290);
-    wall(460, 520);
-    down(640, 760, 380, 440);      // the grand descent
-    flat(430, 500); pit(140, 165); flat(300, 360);
-  } else {                /* Sour Summit — the big finale */
-    flat(520, 600);
-    hill(RI(330, 400));            // the summit itself
-    flat(280, 340); pit(150, 180); flat(240, 300);
-    wall(360, 420);
-    down(460, 560, 280, 330);
-    flat(430, 500);
-    water(720, 860, 100, 130);
-    flat(270, 330); pit(155, 185); flat(240, 300);
-    hill(RI(240, 300));
-    flat(500, 580);
-  }
-  return segs;
+const TRACKS = [
+  /* ---- Sugar Cup (0-3): friendly ---- */
+  { name: 'Gumdrop Meadows',
+    pal: { sky: ['#ffe3f1', '#ffd1e8', '#ffeef7'], hills: ['#f7bfe0', '#f3a9d4'], dirt: ['#b97a4e', '#8a5433'], lip: '#7fd97f', wall: ['#e05c7a', '#c9385c'] },
+    segs() { const d = segDSL();
+      d.flat(540, 640); d.hill(d.RI(170, 210));
+      d.flat(320, 400); d.pit(115, 140); d.flat(250, 320);
+      d.wall(240, 280); d.flat(440, 540);
+      d.water(600, 720); d.flat(300, 360); d.pit(120, 145);
+      d.flat(250, 300); d.hill(d.RI(190, 240)); d.flat(460, 560);
+      return d.segs; } },
+  { name: 'Lollipop Loop',
+    pal: { sky: ['#fde2ff', '#f6ccff', '#fdf0ff'], hills: ['#e6a8f0', '#d98fe6'], dirt: ['#a05a9e', '#7a3f78'], lip: '#ffd6f2', wall: ['#c552d6', '#9b2fb0'] },
+    segs() { const d = segDSL();
+      d.flat(520, 600); d.hill(d.RI(150, 190)); d.flat(300, 360);
+      d.wall(230, 270); d.flat(460, 540); d.pit(115, 140);
+      d.flat(280, 340); d.hill(d.RI(200, 240)); d.flat(300, 360);
+      d.pit(120, 145); d.flat(460, 540);
+      return d.segs; } },
+  { name: 'Soda Lakes',
+    pal: { sky: ['#dff4ff', '#c8ecff', '#eefaff'], hills: ['#a8dcf0', '#8fd0ea'], dirt: ['#e0b56b', '#b98c47'], lip: '#ffe08a', wall: ['#4dabf7', '#2b8ad6'] },
+    segs() { const d = segDSL();
+      d.flat(520, 600); d.water(720, 860); d.flat(280, 340);
+      d.pit(125, 150); d.flat(280, 340); d.hill(d.RI(160, 200));
+      d.flat(260, 320); d.wall(250, 290); d.flat(440, 520);
+      d.water(640, 780); d.flat(280, 330); d.pit(120, 145); d.flat(430, 500);
+      return d.segs; } },
+  { name: 'Marshmallow Marsh',
+    pal: { sky: ['#f4f9f4', '#e2f3e6', '#f7fbf7'], hills: ['#c4e8cc', '#a9dcb5'], dirt: ['#9db88a', '#719060'], lip: '#ffffff', wall: ['#f4a8b8', '#e07a92'] },
+    segs() { const d = segDSL();
+      d.flat(520, 600); d.water(520, 640); d.flat(240, 300);
+      d.hill(d.RI(150, 190)); d.flat(260, 320); d.pit(120, 145);
+      d.flat(240, 300); d.water(560, 680); d.flat(260, 320);
+      d.wall(240, 280); d.flat(430, 500); d.pit(115, 140); d.flat(430, 500);
+      return d.segs; } },
+
+  /* ---- Fizzy Cup (4-7): medium ---- */
+  { name: 'Rock Candy Cliffs',
+    pal: { sky: ['#efe4ff', '#e2d0ff', '#f6efff'], hills: ['#cdb3ef', '#b898e3'], dirt: ['#8d7b9e', '#655672'], lip: '#d9c2ff', wall: ['#9775fa', '#7048e8'] },
+    segs() { const d = segDSL();
+      d.flat(500, 580); d.wall(380, 440); d.down(520, 620, 310, 360);
+      d.flat(300, 380); d.hill(d.RI(190, 230));
+      d.flat(230, 290); d.pit(145, 170); d.flat(230, 290);
+      d.wall(430, 490); d.down(640, 760, 360, 410);
+      d.flat(430, 500); d.pit(135, 160); d.flat(300, 360);
+      return d.segs; } },
+  { name: 'Sherbet Shores',
+    pal: { sky: ['#fff0e0', '#ffe1c4', '#fff7ec'], hills: ['#ffca99', '#f7b478'], dirt: ['#e8c27a', '#c19a52'], lip: '#7fe0d4', wall: ['#ff9f68', '#e87c3e'] },
+    segs() { const d = segDSL();
+      d.flat(520, 600); d.water(760, 900); d.flat(260, 320);
+      d.pit(140, 170); d.flat(240, 300); d.wall(300, 350);
+      d.flat(420, 500); d.hill(d.RI(200, 250)); d.flat(240, 300);
+      d.water(680, 820); d.flat(250, 310); d.pit(135, 160); d.flat(420, 490);
+      return d.segs; } },
+  { name: 'Cola Canyon',
+    pal: { sky: ['#f3e6dd', '#e8d2c2', '#f8efe8'], hills: ['#c9a184', '#b0855f'], dirt: ['#6d4a34', '#4d3121'], lip: '#e8b04a', wall: ['#8a4a2f', '#66341e'] },
+    segs() { const d = segDSL();
+      d.flat(500, 580); d.pit(150, 180); d.flat(240, 300);
+      d.wall(330, 390); d.down(460, 560, 260, 310);
+      d.flat(260, 320); d.pit(145, 175); d.flat(240, 300);
+      d.hill(d.RI(230, 280)); d.flat(260, 320);
+      d.water(560, 680); d.flat(240, 300); d.pit(140, 165); d.flat(420, 490);
+      return d.segs; } },
+  { name: 'Taffy Twists',
+    pal: { sky: ['#ffe8f6', '#ffd4ee', '#fff2fa'], hills: ['#f7a8d8', '#ef8cc8'], dirt: ['#b06a94', '#874a6e'], lip: '#fff3a8', wall: ['#e0559a', '#bd3579'] },
+    segs() { const d = segDSL();
+      d.flat(500, 580); d.hill(d.RI(180, 220)); d.flat(240, 300);
+      d.wall(310, 360); d.flat(400, 470); d.pit(140, 170);
+      d.flat(230, 290); d.hill(d.RI(220, 270)); d.flat(240, 300);
+      d.wall(300, 350); d.down(420, 520, 230, 280);
+      d.flat(240, 300); d.pit(140, 165); d.flat(420, 490);
+      return d.segs; } },
+
+  /* ---- Sour Cup (8-11): the hard stuff ---- */
+  { name: 'Sour Summit',
+    pal: { sky: ['#fff3d6', '#ffe3ad', '#fff8e8'], hills: ['#ffd27f', '#f7b955'], dirt: ['#7fae5a', '#5c8440'], lip: '#b2f2bb', wall: ['#94d82d', '#66a80f'] },
+    segs() { const d = segDSL();
+      d.flat(520, 600); d.hill(d.RI(330, 400));
+      d.flat(280, 340); d.pit(155, 185); d.flat(240, 300);
+      d.wall(400, 460); d.down(460, 560, 310, 360);
+      d.flat(430, 500); d.water(720, 860); d.flat(270, 330);
+      d.pit(160, 190); d.flat(240, 300); d.hill(d.RI(240, 300)); d.flat(500, 580);
+      return d.segs; } },
+  { name: 'Jawbreaker Gorge',
+    pal: { sky: ['#e4e8f4', '#cfd6ea', '#eef1f8'], hills: ['#9aa6c9', '#7f8cb4'], dirt: ['#5c637e', '#41475e'], lip: '#dde3f4', wall: ['#5c6ac4', '#3b47a0'] },
+    segs() { const d = segDSL();
+      d.flat(500, 580); d.pit(165, 195); d.flat(220, 280);
+      d.wall(420, 480); d.down(500, 600, 330, 380);
+      d.flat(230, 290); d.pit(160, 190); d.flat(220, 280);
+      d.water(640, 780); d.flat(230, 290);
+      d.wall(400, 460); d.down(480, 580, 310, 360);
+      d.flat(230, 290); d.pit(155, 185); d.flat(410, 480);
+      return d.segs; } },
+  { name: 'Licorice Ladder',
+    pal: { sky: ['#efe8ee', '#ddd0dc', '#f6f1f5'], hills: ['#8f7a90', '#6f5a70'], dirt: ['#3d3240', '#28202b'], lip: '#e05c7a', wall: ['#2b2530', '#17131c'] },
+    segs() { const d = segDSL();
+      d.flat(480, 560); d.wall(460, 520); d.down(560, 660, 360, 410);
+      d.flat(230, 290); d.pit(160, 190); d.flat(220, 280);
+      d.wall(480, 540); d.down(600, 700, 380, 430);
+      d.flat(230, 290); d.hill(d.RI(200, 250));
+      d.flat(220, 280); d.pit(155, 185); d.flat(410, 480);
+      return d.segs; } },
+  { name: 'Gobstopper Gauntlet',
+    pal: { sky: ['#ffe3e3', '#ffc9cf', '#fff0f0'], hills: ['#f79ab0', '#ef7d99'], dirt: ['#8a3a4e', '#5f2334'], lip: '#ffe08a', wall: ['#d63558', '#a81f3f'] },
+    segs() { const d = segDSL();
+      d.flat(480, 560); d.hill(d.RI(280, 340)); d.flat(220, 280);
+      d.pit(165, 195); d.flat(210, 270); d.wall(440, 500);
+      d.down(520, 620, 340, 390); d.flat(220, 280);
+      d.water(700, 840); d.flat(220, 280); d.pit(160, 190);
+      d.flat(210, 270); d.wall(420, 480); d.down(500, 600, 330, 380);
+      d.flat(220, 280); d.pit(155, 185); d.flat(400, 470);
+      return d.segs; } },
+];
+
+const CUPS = [
+  { name: 'Sugar Cup',  emoji: '🍬', diff: '★☆☆', blurb: 'A friendly tour of the basics', tracks: [0, 1, 2, 3] },
+  { name: 'Fizzy Cup',  emoji: '🥤', diff: '★★☆', blurb: 'Bigger climbs, wider chasms',   tracks: [4, 5, 6, 7] },
+  { name: 'Sour Cup',   emoji: '🍋', diff: '★★★', blurb: 'The championship gauntlet',     tracks: [8, 9, 10, 11] },
+];
+
+function makeSegs(trackNo = 0) {
+  const t = ((trackNo % TRACKS.length) + TRACKS.length) % TRACKS.length;
+  return TRACKS[t].segs();
 }
 
 /* smooth cosine ramp 0→1 */
@@ -408,7 +484,8 @@ function perfect(sim, r, txt) {
 
 /* ---------- race setup ---------- */
 function startCountdown(sim) {
-  const tno = ((sim.race - 1) % THEMES.length + THEMES.length) % THEMES.length;
+  const cup = CUPS[sim.cup || 0] || CUPS[0];
+  const tno = cup.tracks[(sim.race - 1) % cup.tracks.length];
   sim.trackNo = tno;
   sim.trk = buildTrack(makeSegs(tno));
   sim.boxT = sim.trk.boxes.map(() => 0);
@@ -840,144 +917,234 @@ function shade(hex, f = 0.62) {
 }
 
 /* ------------------------------------------------------------
-   THE SPRITES — every racer is a jersey-coloured body with an
-   emoji face plus stubby limbs, and every state is a two-frame
-   animation. Run cadence comes from distance travelled (so fast
-   racers' legs whirl faster); everything else ticks on a shared
-   clock so both screens agree.
-   ------------------------------------------------------------ */
-function drawRacer(g, sx, sy, s, pr, meta, view, trackX) {
-  const st = pr[3], hero = pr[8];
-  const t = (view.tick || 0) * TICK;
-  const tf = Math.floor(t * 5) % 2;                    // shared 2-frame clock
-  const rf = Math.floor(trackX / 44) % 2;              // run cadence by distance
-  const limbCol = shade(meta.color);
-  const emoji = CHARS[hero] ? CHARS[hero].emoji : '🍬';
+   THE CHARACTERS — proper little vector animals, Gumdrop-style.
+   Each racer is a real creature (turtle / gecko / fish / rabbit)
+   wearing a racing shirt in their PLAYER colour, with a two-frame
+   animation for every state. Feet sit at local (0,0); everything
+   is drawn in a ~58px-tall rig and scaled by s.
 
-  const limb = (x0, y0, x1, y1) => {
-    g.strokeStyle = limbCol; g.lineWidth = 6.5 * s; g.lineCap = 'round';
-    g.beginPath(); g.moveTo(x0 * s, y0 * s); g.lineTo(x1 * s, y1 * s); g.stroke();
-  };
-  const body = (bx, by, rx, ry) => {
-    g.fillStyle = meta.color;
-    g.beginPath(); g.ellipse(bx * s, by * s, rx * s, ry * s, 0, 0, Math.PI * 2); g.fill();
-  };
-  const face = (fx, fy, size = 34) => {
-    g.font = `${size * s}px sans-serif`;
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText(emoji, fx * s, fy * s);
+   The rig: legs + arms are posed per state/frame, then each hero
+   paints its own body parts around that skeleton:
+     back extras → far arm → legs → SHIRT → head → near arm
+   ------------------------------------------------------------ */
+
+const HERO_PAL = {
+  shelly: { skin: '#7ac74f', dark: '#5a9e38', a: '#8a5a33', b: '#6d4526', c: '#a9713f' },
+  gecko:  { skin: '#3ddc97', dark: '#2ab77a', a: '#c8f7e4', b: '#ffd166', c: '#1f8f60' },
+  finn:   { skin: '#ff9f43', dark: '#e67e22', a: '#4ecdc4', b: '#ffe8c2', c: '#38b2a8' },
+  zippy:  { skin: '#f4f4f6', dark: '#d8d8de', a: '#ffb3c6', b: '#ffffff', c: '#c4c4cc' },
+};
+
+/* limb endpoints per state+frame: [farLeg, nearLeg, farArm, nearArm],
+   each [fromX, fromY, toX, toY] in rig space (hips ~(0,-10), shoulders ~(0,-30)) */
+function poseFor(st, f) {
+  const L = (x0, y0, x1, y1) => [x0, y0, x1, y1];
+  switch (st) {
+    case ST.AIR: return [L(-3, -10, -11, -16), L(4, -10, -3, -18),
+                         L(-2, -30, f ? -13 : -11, -44), L(3, -30, f ? 15 : 17, -46)];
+    case ST.CLIMB: return [L(-2, -10, 8, -4), L(3, -10, 11, -13),
+                           f ? L(-2, -30, 10, -22) : L(-2, -30, 12, -44),
+                           f ? L(3, -30, 14, -50) : L(3, -30, 13, -26)];
+    case ST.FALL: return [L(-3, -10, f ? -12 : -8, -2), L(4, -10, f ? 8 : 12, -2),
+                          L(-2, -30, f ? -15 : -19, -46), L(3, -30, f ? 19 : 15, -46)];
+    case ST.STALL: return [L(-4, -10, -7, -1), L(5, -10, 8, -1),
+                           L(-2, -30, -12, -16), L(3, -30, 13, -16)];
+    case ST.DONE: return [L(-4, -10, -7, -1), L(5, -10, 8, -1),
+                          L(-2, -30, -14, f ? -50 : -44), L(3, -30, 15, f ? -44 : -50)];
+    case ST.TRIP: case ST.BONK:
+      return [L(-3, -10, -13, -4), L(4, -10, 14, -2),
+              L(-2, -30, -16, -40), L(3, -30, 17, -38)];
+    case ST.SWIM:
+      return [L(-3, -10, -14, f ? -4 : -16), L(4, -10, -8, f ? -18 : -4),
+              L(-2, -30, f ? -12 : 6, f ? -42 : -46), L(3, -30, f ? 16 : 15, f ? -20 : -44)];
+    default:      /* RUN */
+      return f
+        ? [L(-3, -10, -12, -2), L(4, -10, 13, 0), L(-2, -30, -13, -20), L(3, -30, 13, -40)]
+        : [L(-3, -10, 12, -2),  L(4, -10, -11, 0), L(-2, -30, -12, -40), L(3, -30, 14, -20)];
+  }
+}
+
+function drawRacer(g, sx, sy, s, pr, meta, view, trackX) {
+  const st = pr[3], hero = pr[8] || 'shelly';
+  const t = (view.tick || 0) * TICK;
+  const f = st === ST.RUN ? Math.floor(trackX / 44) % 2 : Math.floor(t * 5) % 2;
+  const P = HERO_PAL[hero] || HERO_PAL.shelly;
+  const shirt = meta.color, shirtDark = shade(meta.color, 0.72);
+
+  const cap = (pts, w, col) => {
+    g.strokeStyle = col; g.lineWidth = w * s; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(pts[0] * s, pts[1] * s); g.lineTo(pts[2] * s, pts[3] * s); g.stroke();
   };
 
   g.save();
   g.translate(sx, sy);
 
+  /* whole-body transforms per state */
+  if (st === ST.RUN) { g.rotate(0.09); g.translate(0, (f ? -2.5 : 0) * s); }
+  if (st === ST.AIR) g.rotate(-0.08);
+  if (st === ST.SWIM) { g.rotate(-1.15); g.translate(6 * s, 6 * s); }
+  if (st === ST.CLIMB) g.translate(5 * s, 0);
+  if (st === ST.TRIP || st === ST.BONK) g.rotate(Math.PI / 2 * 0.85);
+  if (st === ST.STALL) g.translate((f ? 2 : -2) * s, 0);
+  if (st === ST.DONE) g.translate(0, (f ? -3.5 : 0) * s);
+
+  /* Shellsworth's slide: just the shell, spinning */
   if (st === ST.SLIDE) {
-    /* tucked into a spinning candy shell */
     g.rotate((t * 9) % (Math.PI * 2));
-    g.fillStyle = limbCol;
-    g.beginPath(); g.arc(0, -14 * s, 20 * s, 0, Math.PI * 2); g.fill();
-    g.strokeStyle = meta.color; g.lineWidth = 4 * s;
-    g.beginPath(); g.arc(0, -14 * s, 13 * s, 0.3, Math.PI * 1.6); g.stroke();
-    g.beginPath(); g.arc(0, -14 * s, 6 * s, 2.4, Math.PI * 2.1); g.stroke();
+    g.fillStyle = P.a;
+    g.beginPath(); g.arc(0, -15 * s, 19 * s, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = P.b; g.lineWidth = 3.5 * s;
+    for (const [rx, a0, a1] of [[12, 0.4, 1.7], [12, 2.6, 3.9], [12, 4.8, 6.1], [5.5, 0, 6.28]]) {
+      g.beginPath(); g.arc(0, -15 * s, rx * s, a0, a1); g.stroke();
+    }
+    g.strokeStyle = shirt; g.lineWidth = 4 * s;
+    g.beginPath(); g.arc(0, -15 * s, 19 * s, -0.5, 0.9); g.stroke();  // shirt band whips round
     g.restore();
     return;
   }
 
-  if (st === ST.SWIM) {
-    /* horizontal, windmilling arms, kicking feet */
-    limb(-20, -10, -27, tf ? -20 : -2);                // kick
-    limb(-14, -16, -24, tf ? -6 : -24);
-    body(0, -14, 26, 15);
-    if (tf) limb(4, -16, 12, -36); else limb(4, -16, 17, 2);   // stroke
-    face(9, -17, 30);
+  const [farLeg, nearLeg, farArm, nearArm] = poseFor(st, f);
+
+  /* ---- 1. behind-the-body extras ---- */
+  if (hero === 'shelly') {                       // the shell, worn like a backpack
+    g.fillStyle = P.a;
+    g.beginPath(); g.arc(-7 * s, -21 * s, 13.5 * s, Math.PI * 0.42, Math.PI * 1.62); g.fill();
+    g.strokeStyle = P.c; g.lineWidth = 2.4 * s;
+    g.beginPath(); g.arc(-7 * s, -21 * s, 9 * s, Math.PI * 0.55, Math.PI * 1.5); g.stroke();
+  }
+  if (hero === 'gecko') {                        // curly tail
+    g.strokeStyle = P.skin; g.lineWidth = 5 * s; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(-8 * s, -12 * s);
+    g.quadraticCurveTo(-22 * s, -10 * s, -22 * s, (f ? -21 : -19) * s);
+    g.quadraticCurveTo(-22 * s, -27 * s, -16 * s, -26 * s);
+    g.stroke();
+  }
+  if (hero === 'finn') {                         // dorsal + tail fins
+    g.fillStyle = P.a;
+    g.beginPath(); g.moveTo(-4 * s, -34 * s);
+    g.quadraticCurveTo(-14 * s, -46 * s, (f ? -17 : -15) * s, -34 * s); g.closePath(); g.fill();
+    g.beginPath(); g.moveTo(-8 * s, -14 * s);
+    g.lineTo(-20 * s, (f ? -22 : -6) * s); g.lineTo(-19 * s, -14 * s); g.closePath(); g.fill();
+  }
+  if (hero === 'zippy') {                        // fluffy tail + far ear
+    g.fillStyle = P.b;
+    g.beginPath(); g.arc(-11 * s, -12 * s, 5.5 * s, 0, Math.PI * 2); g.fill();
+    g.save(); g.translate(-3 * s, -52 * s); g.rotate(-0.28 + (f ? 0.06 : 0));
+    g.fillStyle = P.dark;
+    g.beginPath(); g.ellipse(0, -8 * s, 4.5 * s, 11 * s, 0, 0, Math.PI * 2); g.fill();
     g.restore();
-    return;
   }
 
-  if (st === ST.CLIMB) {
-    /* hugging the wall, reaching hand over hand */
-    g.translate(4 * s, 0);
-    limb(4, -6, 12, -2);                                // bent legs on the brick
-    limb(2, -14, 12, -12);
-    body(0, -28, 17, 25);
-    if (tf) { limb(6, -36, 15, -54); limb(4, -22, 14, -24); }
-    else    { limb(4, -36, 14, -28); limb(6, -26, 15, -46); }
-    face(0, -32, 30);
-    g.restore();
-    return;
-  }
+  /* ---- 2. far limbs, then legs ---- */
+  cap(farArm, 6, P.dark);
+  cap(farLeg, 6.5, P.dark);
+  cap(nearLeg, 6.5, P.skin);
 
-  if (st === ST.TRIP || st === ST.BONK) {
-    g.rotate(Math.PI / 2 * 0.85);
-    limb(6, -6, 15, -1); limb(-6, -6, -13, -4);         // splayed
-    limb(10, -32, 19, -40); limb(-10, -32, -19, -36);
-    body(0, -26, 20, 26);
-    face(0, -28);
-    g.restore();
-    /* dizzy stars, un-rotated */
-    g.save(); g.translate(sx, sy);
-    g.font = `${26 * s}px sans-serif`; g.textAlign = 'center';
-    g.fillText(tf ? '💫' : '✨', 0, -62 * s);
-    g.restore();
-    return;
-  }
+  /* ---- 3. THE SHIRT — the player's colour ---- */
+  g.fillStyle = shirt;
+  g.beginPath();
+  g.moveTo(-11 * s, -32 * s);
+  g.quadraticCurveTo(-14 * s, -20 * s, -11 * s, -8 * s);
+  g.lineTo(11 * s, -8 * s);
+  g.quadraticCurveTo(14 * s, -20 * s, 11 * s, -32 * s);
+  g.quadraticCurveTo(0, -36 * s, -11 * s, -32 * s);
+  g.closePath(); g.fill();
+  g.fillStyle = shirtDark;                        // hem + collar
+  g.fillRect(-11 * s, -11 * s, 22 * s, 3.2 * s);
+  g.beginPath(); g.ellipse(0, -33 * s, 7 * s, 3 * s, 0, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#ffffffcc';                      // racing stripe
+  g.fillRect(-2 * s, -32 * s, 4 * s, 24 * s);
 
-  if (st === ST.FALL) {
-    /* flailing down the chasm */
-    limb(-6, -4, tf ? -13 : -9, 4); limb(6, -4, tf ? 9 : 13, 4);
-    limb(-11, -34, tf ? -17 : -21, -50); limb(11, -34, tf ? 21 : 17, -50);
-    body(0, -26, 20, 26);
-    face(0, -28);
-    g.font = `${20 * s}px sans-serif`; g.textAlign = 'center';
-    g.fillText('💨', 0, -60 * s);
-    g.restore();
-    return;
-  }
+  /* ---- 4. the head ---- */
+  const hx = 3, hy = -45;
+  g.save();
+  g.translate(hx * s, hy * s);
+  const dizzy = st === ST.TRIP || st === ST.BONK;
+  const happy = st === ST.DONE;
+  const worried = st === ST.FALL || st === ST.STALL;
 
-  if (st === ST.AIR) {
-    g.rotate(-0.06);
-    limb(-4, -6, -11, -13); limb(5, -6, -3, -15);       // tucked legs
-    limb(10, -34, tf ? 17 : 19, tf ? -48 : -44);        // arms up
-    limb(-10, -34, tf ? -15 : -13, -44);
-    body(0, -26, 20, 26);
-    face(0, -28);
-    g.restore();
-    return;
-  }
+  const eye = (ex, ey, r) => {
+    if (dizzy) {                                  // X-eyes
+      g.strokeStyle = '#333'; g.lineWidth = 1.8 * s;
+      g.beginPath(); g.moveTo((ex - r) * s, (ey - r) * s); g.lineTo((ex + r) * s, (ey + r) * s);
+      g.moveTo((ex + r) * s, (ey - r) * s); g.lineTo((ex - r) * s, (ey + r) * s); g.stroke();
+    } else if (happy) {                           // ^ ^
+      g.strokeStyle = '#333'; g.lineWidth = 1.8 * s;
+      g.beginPath(); g.moveTo((ex - r) * s, ey * s); g.lineTo(ex * s, (ey - r) * s); g.lineTo((ex + r) * s, ey * s); g.stroke();
+    } else {
+      g.fillStyle = '#fff'; g.beginPath(); g.arc(ex * s, ey * s, r * s, 0, Math.PI * 2); g.fill();
+      g.fillStyle = '#333'; g.beginPath(); g.arc((ex + r * 0.35) * s, ey * s, r * 0.45 * s, 0, Math.PI * 2); g.fill();
+    }
+  };
+  const mouth = (mx, my, w) => {
+    g.strokeStyle = '#333'; g.lineWidth = 1.6 * s;
+    g.beginPath();
+    if (worried) g.arc(mx * s, (my + 1) * s, w * 0.5 * s, 0, Math.PI * 2);
+    else g.arc(mx * s, my * s, w * s, 0.25, Math.PI - 0.25);
+    g.stroke();
+  };
 
-  if (st === ST.STALL) {
-    g.translate((tf ? 2 : -2) * s, 0);                  // frustrated shake
-    limb(-6, -4, -9, 1); limb(6, -4, 9, 1);
-    limb(-11, -30, -15, -18); limb(11, -30, 15, -18);
-    body(0, -26, 20, 26);
-    face(0, -28);
-    g.font = `${20 * s}px sans-serif`; g.textAlign = 'center';
-    g.fillText('💦', 20 * s, -52 * s);
+  if (hero === 'shelly') {
+    g.fillStyle = P.skin;
+    g.beginPath(); g.arc(0, 0, 12 * s, 0, Math.PI * 2); g.fill();
+    eye(3, -3.5, 3.4); eye(9.5, -3.5, 3.4);
+    mouth(6, 3, 4);
+  } else if (hero === 'gecko') {
+    g.fillStyle = P.skin;
+    g.beginPath(); g.ellipse(1 * s, 1 * s, 14 * s, 10.5 * s, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = P.skin;                          // bulgy eye mounts
+    g.beginPath(); g.arc(2 * s, -8 * s, 5 * s, 0, Math.PI * 2);
+    g.arc(11 * s, -8 * s, 5 * s, 0, Math.PI * 2); g.fill();
+    eye(2, -8, 3.6); eye(11, -8, 3.6);
+    mouth(6, 3.5, 6);
+  } else if (hero === 'finn') {
+    g.fillStyle = P.skin;
+    g.beginPath(); g.ellipse(1 * s, 0, 13 * s, 11.5 * s, 0, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = P.dark; g.lineWidth = 1.6 * s;  // gill
+    g.beginPath(); g.arc(-4 * s, 0, 6 * s, -0.9, 0.9); g.stroke();
+    eye(6, -3, 4);
+    g.fillStyle = '#ff7f6e';                        // big fish lips
+    g.beginPath(); g.ellipse(13 * s, 2 * s, 3.4 * s, 2.4 * s, 0, 0, Math.PI * 2);
+    g.ellipse(13 * s, 5.5 * s, 3 * s, 2.1 * s, 0, 0, Math.PI * 2); g.fill();
+  } else {                                          // zippy
+    g.save(); g.translate(3 * s, -9 * s); g.rotate(0.14 + (f ? -0.06 : 0));   // near ear
+    g.fillStyle = P.skin;
+    g.beginPath(); g.ellipse(0, -9 * s, 4.8 * s, 12 * s, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = P.a;
+    g.beginPath(); g.ellipse(0, -8 * s, 2.4 * s, 8 * s, 0, 0, Math.PI * 2); g.fill();
     g.restore();
-    return;
+    g.fillStyle = P.skin;
+    g.beginPath(); g.arc(0, 0, 11.5 * s, 0, Math.PI * 2); g.fill();
+    eye(2.5, -3, 3.2); eye(9, -3, 3.2);
+    g.fillStyle = P.a;                              // nose
+    g.beginPath(); g.moveTo(4.6 * s, 1.5 * s); g.lineTo(7.4 * s, 1.5 * s); g.lineTo(6 * s, 3.6 * s); g.closePath(); g.fill();
+    if (!dizzy) { g.fillStyle = '#fff'; g.fillRect(4.4 * s, 4 * s, 3.2 * s, 3.4 * s); }  // buck teeth
+    g.strokeStyle = '#00000022'; g.lineWidth = 1 * s;                                     // whiskers
+    g.beginPath(); g.moveTo(9 * s, 2 * s); g.lineTo(14 * s, 1 * s);
+    g.moveTo(9 * s, 4 * s); g.lineTo(14 * s, 4.5 * s); g.stroke();
   }
-
-  if (st === ST.DONE) {
-    g.translate(0, (tf ? -3 : 0) * s);                  // victory hop
-    limb(-6, -4, -9, 1); limb(6, -4, 9, 1);
-    limb(-11, -34, -18, tf ? -52 : -46);                // arms in the air
-    limb(11, -34, 18, tf ? -46 : -52);
-    body(0, -26, 20, 26);
-    face(0, -28);
-    g.restore();
-    return;
-  }
-
-  /* RUN — the default: scissor legs, pumping arms, a little bob */
-  g.rotate(0.09);
-  g.translate(0, (rf ? -2.5 : 0) * s);
-  if (rf) { limb(-3, -4, 13, 1);  limb(-2, -4, -12, -3); }
-  else    { limb(-3, -4, -12, 1); limb(-2, -4, 13, -3); }
-  if (rf) { limb(-10, -32, -17, -24); limb(10, -32, 16, -38); }
-  else    { limb(-10, -32, -15, -40); limb(10, -32, 17, -26); }
-  body(0, -26, 20, 26);
-  face(0, -28);
   g.restore();
+
+  /* ---- 5. near arm swings over the shirt ---- */
+  cap(nearArm, 6, P.skin);
+
+  g.restore();
+
+  /* state garnish, drawn un-transformed */
+  const garnish = { [ST.TRIP]: f ? '💫' : '✨', [ST.BONK]: f ? '💫' : '✨',
+                    [ST.FALL]: '💨', [ST.STALL]: '💦' };
+  if (garnish[st]) {
+    g.font = `${22 * s}px sans-serif`; g.textAlign = 'center';
+    g.fillText(garnish[st], sx + (st === ST.STALL ? 20 * s : 0), sy - 66 * s);
+  }
+}
+
+/* paint a hero portrait (running pose, frame 1) onto a small canvas */
+function paintPortrait(cv, hero, color) {
+  const g = cv.getContext('2d');
+  g.clearRect(0, 0, cv.width, cv.height);
+  drawRacer(g, cv.width / 2 - 2, cv.height - 5, cv.height / 88,
+            [0, 0, 0, ST.RUN, 0, 0, 0, 0, hero, 0, 0], { color }, { tick: 0 }, 44);
 }
 
 function w2s(cam, W, H, x, y) {
@@ -987,7 +1154,7 @@ function w2s(cam, W, H, x, y) {
 function drawScene(g, W, H, cam, trk, view, opts) {
   const z = cam.z;
   const x0 = cam.x - W / 2 / z - 60, x1 = cam.x + W / 2 / z + 60;
-  const TH = THEMES[trk.theme || 0] || THEMES[0];
+  const TH = (TRACKS[trk.theme || 0] || TRACKS[0]).pal;
 
   /* the camera window can hang over the seam — draw wrap copies of every
      feature at these world offsets so the loop looks continuous */
@@ -1015,16 +1182,19 @@ function drawScene(g, W, H, cam, trk, view, opts) {
   }
   g.restore();
 
-  /* terrain silhouette */
+  /* terrain silhouette — groundY wraps around the loop, so sample the whole
+     camera window (never clamp to [0, len] — that made ledges past the seam
+     vanish) and snap samples to the cell grid so edges don't shimmer. */
   g.beginPath();
   let started = false;
-  for (let x = Math.max(0, x0); x <= Math.min(trk.len, x1); x += CELL) {
+  const gx0 = Math.floor(x0 / CELL) * CELL, gx1 = Math.ceil(x1 / CELL) * CELL;
+  for (let x = gx0; x <= gx1; x += CELL) {
     const [sx, sy] = w2s(cam, W, H, x, groundY(trk, x));
     if (!started) { g.moveTo(sx, sy); started = true; } else g.lineTo(sx, sy);
   }
   if (started) {
-    g.lineTo(w2s(cam, W, H, Math.min(trk.len, x1), 0)[0], H + 40);
-    g.lineTo(w2s(cam, W, H, Math.max(0, x0), 0)[0], H + 40);
+    g.lineTo(W + 60, H + 40);
+    g.lineTo(-60, H + 40);
     g.closePath();
     const dirt = g.createLinearGradient(0, H * 0.3, 0, H);
     dirt.addColorStop(0, TH.dirt[0]); dirt.addColorStop(1, TH.dirt[1]);
@@ -1239,7 +1409,8 @@ const HOST_HTML = `
 
   <div class="rr-overlay rr-pick-ov">
     <h1>🏁 Rock Candy Rally</h1>
-    <p class="rr-sub">Pick your racer on your phone — the skill is all in the timing!</p>
+    <p class="rr-sub">Pick your racer on your phone — the party host picks the cup!</p>
+    <div class="rr-cup-row"></div>
     <div class="rr-pick-grid"></div>
     <button class="rr-btn rr-forcestart hidden">Start the race!</button>
   </div>
@@ -1275,6 +1446,7 @@ function createHost(ctx) {
   let canvas, g, mini, mg;
   let floaters = [];
   const seatMeta = {};                 // seat -> {name, color, avatar}
+  const heroMemory = new Map();        // playerId -> hero, survives Play-Again
   let lastView = null, prevSnapH = null, curSnapH = null, snapAtH = 0;
 
   const $q = (s) => ctx.root.querySelector(s);
@@ -1310,7 +1482,8 @@ function createHost(ctx) {
     const r = sim.racers.get(id);
     if (!r) return;
     ctx.sendTo(id, { k: 'seat', seat: r.seat, color: r.color, name: r.name,
-                     isHost: id === ctx.hostPlayerId(),
+                     isHost: id === ctx.hostPlayerId(), cup: sim.cup || 0, hero: r.hero || null,
+                     cups: CUPS.map((c, i) => ({ i, name: c.name, emoji: c.emoji, diff: c.diff, blurb: c.blurb, tracks: c.tracks.map((t) => TRACKS[t].name) })),
                      chars: CHAR_IDS.map((c) => ({ id: c, ...CHARS[c] })) });
     ctx.sendTo(id, { k: 'phase', ph: sim.phase, ...(sim.trk ? { segs: sim.trk.segs, tno: sim.trackNo, race: sim.race, total: RACE_COUNT } : {}) });
     if (sim.phase === 'shop') sendWallet(id);
@@ -1335,17 +1508,20 @@ function createHost(ctx) {
     syncSeats();
     broadcastPhase({ segs: sim.trk.segs, tno: sim.trackNo, race: sim.race, total: RACE_COUNT });
     sim.trk.theme = sim.trackNo;
-    $q('.rr-count-track').textContent = `🏁 ${THEMES[sim.trackNo].name} · ${LAPS} laps`;
+    $q('.rr-count-track').textContent = `${CUPS[sim.cup || 0].emoji} ${CUPS[sim.cup || 0].name} · ${TRACKS[sim.trackNo].name} · ${LAPS} laps`;
     showOverlay('count');
   }
 
   function resetSeries() {
-    for (const r of sim.racers.values()) {
-      r.hero = null; r.picked = false; r.coins = 0; r.pts = 0;
+    /* characters persist across restarts — only coins, upgrades and points
+       reset. Everything clears for real when the party leaves to the lobby. */
+    for (const [id, r] of sim.racers) {
+      r.hero = heroMemory.get(id) || null; r.picked = !!r.hero;
+      r.coins = 0; r.pts = 0;
       r.lvl = { spd: 0, jmp: 0, pow: 0, rec: 0 };
     }
     sim.phase = 'pick'; sim.race = 0; sim.trk = null;
-    broadcastPhase({});
+    for (const p of ctx.players()) sendSeat(p.id);   // re-sends phase + kept hero
     showOverlay('pick'); renderPicks();
   }
 
@@ -1356,17 +1532,28 @@ function createHost(ctx) {
   }
 
   function renderPicks() {
+    $q('.rr-cup-row').innerHTML = CUPS.map((c, i) => `
+      <div class="rr-cupcard ${i === (sim.cup || 0) ? 'rr-cupcard-on' : ''}">
+        <span class="rr-cup-emoji">${c.emoji}</span>
+        <span class="rr-cup-name">${c.name}</span>
+        <span class="rr-cup-diff">${c.diff}</span>
+        <span class="rr-cup-tracks">${c.tracks.map((t) => TRACKS[t].name).join(' · ')}</span>
+      </div>`).join('');
     const grid = $q('.rr-pick-grid');
     grid.innerHTML = CHAR_IDS.map((cid) => {
       const c = CHARS[cid];
       const takers = [...sim.racers.values()].filter((r) => r.hero === cid);
       return `<div class="rr-pick-card">
-        <span class="rr-pick-emoji">${c.emoji}</span>
+        <canvas class="rr-pick-port" data-hero="${cid}" width="96" height="104"></canvas>
         <span class="rr-pick-name">${c.name}</span>
         <span class="rr-pick-blurb">${c.blurb}</span>
         <span class="rr-pick-takers">${takers.map((r) => `<i style="background:${r.color}">${escapeHtml(r.name)}</i>`).join('') || '&nbsp;'}</span>
       </div>`;
     }).join('');
+    for (const cv of ctx.root.querySelectorAll('.rr-pick-port')) {
+      const takers = [...sim.racers.values()].filter((r) => r.hero === cv.dataset.hero);
+      paintPortrait(cv, cv.dataset.hero, takers[0] ? takers[0].color : '#9aa0b4');
+    }
     const anyPicked = [...sim.racers.values()].some((r) => r.hero && r.connected);
     $q('.rr-forcestart').classList.toggle('hidden', !anyPicked);
   }
@@ -1383,14 +1570,14 @@ function createHost(ctx) {
         renderResults(); showOverlay('results');
       }
       if (sim.phase === 'shop') {
-        broadcastPhase({});
+        broadcastPhase({ t: SHOP_T });
         for (const id of sim.order) sendWallet(id);
         showOverlay('shop');
       }
       if (sim.phase === 'count') {   // shop rolled into the next race
         broadcastPhase({ segs: sim.trk.segs, tno: sim.trackNo, race: sim.race, total: RACE_COUNT });
         sim.trk.theme = sim.trackNo;
-        $q('.rr-count-track').textContent = `🏁 ${THEMES[sim.trackNo].name} · ${LAPS} laps`;
+        $q('.rr-count-track').textContent = `${CUPS[sim.cup || 0].emoji} ${CUPS[sim.cup || 0].name} · ${TRACKS[sim.trackNo].name} · ${LAPS} laps`;
         showOverlay('count');
       }
       if (sim.phase === 'podium') {
@@ -1449,8 +1636,13 @@ function createHost(ctx) {
 
   function renderShopStatus() {
     const live = [...sim.racers.values()].filter((r) => r.hero && r.connected);
-    $q('.rr-shop-status').innerHTML = live.map((r) =>
-      `<span class="rr-chip" style="--c:${r.color}">${r.shopDone ? '✅' : '🛒'} ${escapeHtml(r.name)} · ${r.coins}🪙</span>`).join('');
+    $q('.rr-shop-status').innerHTML = live.map((r) => `
+      <div class="rr-shop-player ${r.shopDone ? 'rr-shop-player-done' : ''}" style="--c:${r.color}">
+        <span class="rr-shop-player-ava">${r.avatar || '🎮'}</span>
+        <span class="rr-shop-player-name">${escapeHtml(r.name)}</span>
+        <span class="rr-shop-player-coins">🪙 ${r.coins}</span>
+        <span class="rr-shop-player-state">${r.shopDone ? '✅ Ready' : '🛒 shopping…'}</span>
+      </div>`).join('');
     $q('.rr-shop-clock').textContent = `Next race in ${Math.ceil(sim.phaseT)}s`;
   }
 
@@ -1515,7 +1707,7 @@ function createHost(ctx) {
     let leadLap = 0;
     for (const pr of view.p) leadLap = Math.max(leadLap, (pr[10] || 0) + (pr[9] ? -1 : 0));
     $q('.rr-race-no').textContent =
-      `Race ${sim.race}/${RACE_COUNT} · ${THEMES[sim.trackNo || 0].name}` +
+      `Race ${sim.race}/${RACE_COUNT} · ${TRACKS[sim.trackNo || 0].name}` +
       (sim.phase === 'race' ? ` · Lap ${Math.min(LAPS, leadLap + 1)}/${LAPS}` : '');
     $q('.rr-clock').textContent = sim.phase === 'race'
       ? (view.dnf !== undefined ? `⏱ ${sim.raceT.toFixed(1)}s · DNF in ${curSnapH.dnf}s` : `⏱ ${sim.raceT.toFixed(1)}s`)
@@ -1578,7 +1770,18 @@ function createHost(ctx) {
     if (!r || !data) return;
     switch (data.k) {
       case 'pick':
-        if (sim.phase === 'pick' && CHARS[data.hero]) { r.hero = data.hero; r.picked = true; renderPicks(); }
+        if (sim.phase === 'pick' && CHARS[data.hero]) {
+          r.hero = data.hero; r.picked = true;
+          heroMemory.set(playerId, data.hero);
+          renderPicks();
+        }
+        break;
+      case 'cup':
+        if (sim.phase === 'pick' && playerId === ctx.hostPlayerId() && CUPS[data.i | 0]) {
+          sim.cup = data.i | 0;
+          ctx.sendAll({ k: 'cupsel', i: sim.cup });
+          renderPicks();
+        }
         break;
       case 'start':
         if (playerId === ctx.hostPlayerId()) beginSeries();
@@ -1642,10 +1845,16 @@ function createHost(ctx) {
 const CTRL_HTML = `
 <div class="rr-ctrl">
   <div class="rr-cpick">
-    <h2>Pick your racer</h2>
-    <div class="rr-cpick-grid"></div>
-    <p class="rr-cpick-note">Everyone's speciality shines on a different part of the track.</p>
-    <button class="rr-btn rr-cstart hidden">🏁 Start the race!</button>
+    <div class="rr-cscroll">
+      <h2 class="rr-ctitle">Pick your racer</h2>
+      <div class="rr-cpick-grid"></div>
+      <h3 class="rr-csub-h">Cup</h3>
+      <div class="rr-ccup-row"></div>
+      <p class="rr-cpick-note"></p>
+    </div>
+    <div class="rr-cfoot">
+      <button class="rr-btn rr-cstart hidden">🏁 Start the series!</button>
+    </div>
   </div>
 
   <div class="rr-cplay hidden">
@@ -1664,25 +1873,36 @@ const CTRL_HTML = `
   </div>
 
   <div class="rr-cshop hidden">
-    <h2>🛠️ Pit stop</h2>
-    <div class="rr-ccoins"></div>
-    <div class="rr-cshop-rows"></div>
-    <button class="rr-btn rr-cdone">Ready for the next race ✅</button>
-    <button class="rr-btn rr-hostonly rr-cskipshop hidden">🏎 Start the race now</button>
+    <div class="rr-cscroll">
+      <div class="rr-shop-head">
+        <h2 class="rr-ctitle">🛠️ Pit stop</h2>
+        <div class="rr-ccoins"></div>
+      </div>
+      <div class="rr-shop-timer"><i class="rr-shop-timer-fill"></i></div>
+      <div class="rr-cshop-rows"></div>
+    </div>
+    <div class="rr-cfoot">
+      <button class="rr-btn rr-cdone">Ready for the next race ✅</button>
+      <button class="rr-btn rr-hostonly rr-cskipshop hidden">🏎 Start the race now</button>
+    </div>
   </div>
 
   <div class="rr-cend hidden">
-    <h2 class="rr-cend-title"></h2>
-    <div class="rr-cend-body"></div>
-    <button class="rr-btn rr-cnext hidden">Continue ▸</button>
-    <button class="rr-btn rr-cagain hidden">🔄 Play again</button>
-    <button class="rr-btn rr-hostonly rr-clobby hidden">⬅ Back to game menu</button>
+    <div class="rr-cscroll rr-cend-mid">
+      <h2 class="rr-cend-title"></h2>
+      <div class="rr-cend-body"></div>
+    </div>
+    <div class="rr-cfoot">
+      <button class="rr-btn rr-cnext hidden">Continue ▸</button>
+      <button class="rr-btn rr-cagain hidden">🔄 Play again — same racers</button>
+      <button class="rr-btn rr-hostonly rr-clobby hidden">⬅ Back to game menu</button>
+    </div>
   </div>
 </div>`;
 
 function createController(ctx) {
   let canvas, g, raf = 0;
-  let mySeat = -1, myColor = '#fff', chars = null, myHero = null;
+  let mySeat = -1, myColor = '#fff', chars = null, myHero = null, cups = null, cupSel = 0;
   let trk = null;
   let prev = null, cur = null, snapAt = 0;
   let floaters = [];
@@ -1739,11 +1959,16 @@ function createController(ctx) {
     if (!chars) return;
     $q('.rr-cpick-grid').innerHTML = chars.map((c) => `
       <button class="rr-ccard ${myHero === c.id ? 'rr-ccard-on' : ''}" data-hero="${c.id}">
-        <span class="rr-ccard-emoji">${c.emoji}</span>
-        <span class="rr-ccard-name">${c.name}</span>
-        <span class="rr-ccard-blurb">${c.blurb}</span>
-        <span class="rr-ccard-desc">${c.desc}</span>
+        <canvas class="rr-ccard-port" data-hero="${c.id}" width="76" height="84"></canvas>
+        <span class="rr-ccard-text">
+          <b class="rr-ccard-name">${c.name}</b>
+          <small class="rr-ccard-blurb">${c.blurb}</small>
+        </span>
+        <span class="rr-ccard-tick">${myHero === c.id ? '✓' : ''}</span>
       </button>`).join('');
+    for (const cv of ctx.root.querySelectorAll('.rr-ccard-port')) {
+      paintPortrait(cv, cv.dataset.hero, myColor);
+    }
     for (const btn of ctx.root.querySelectorAll('.rr-ccard')) {
       btn.addEventListener('click', () => {
         myHero = btn.dataset.hero;
@@ -1753,20 +1978,41 @@ function createController(ctx) {
         $q('.rr-pw-ico').textContent = ico;
       });
     }
+    if (cups) {
+      $q('.rr-ccup-row').innerHTML = cups.map((c) => `
+        <button class="rr-ccup ${c.i === cupSel ? 'rr-ccup-on' : ''}" data-i="${c.i}" ${isPartyHost ? '' : 'disabled'}>
+          <span class="rr-ccup-top">${c.emoji} <b>${c.name}</b> <i>${c.diff}</i></span>
+          <small>${c.tracks.join(' · ')}</small>
+        </button>`).join('');
+      if (isPartyHost) {
+        for (const btn of ctx.root.querySelectorAll('.rr-ccup')) {
+          btn.addEventListener('click', () => { cupSel = +btn.dataset.i; ctx.send({ k: 'cup', i: cupSel }); renderPick(); });
+        }
+      }
+    }
+    $q('.rr-cpick-note').textContent = isPartyHost
+      ? 'You are the party host — pick the cup, then start when everyone is ready.'
+      : 'The party host picks the cup and starts the series.';
     $q('.rr-cstart').classList.toggle('hidden', !(isPartyHost && myHero));
   }
 
-  function renderShop() {
+    function renderShop() {
     if (!wallet) return;
-    $q('.rr-ccoins').innerHTML = `You have <b>${wallet.coins} 🪙</b>`;
+    $q('.rr-ccoins').innerHTML = `<span class="rr-coinchip">🪙 ${wallet.coins}</span>`;
     $q('.rr-cshop-rows').innerHTML = STATS.map(([id, label, blurb]) => {
       const lvl = wallet.lvl[id], maxed = lvl >= wallet.max;
       const cost = maxed ? null : wallet.costs[lvl];
-      const dots = '●'.repeat(lvl) + '○'.repeat(wallet.max - lvl);
-      return `<div class="rr-shop-row">
-        <div class="rr-shop-info"><b>${label}</b><span class="rr-shop-dots">${dots}</span><small>${blurb}</small></div>
-        <button class="rr-shop-buy" data-stat="${id}" ${maxed || wallet.coins < cost ? 'disabled' : ''}>
-          ${maxed ? 'MAX' : cost + '🪙'}
+      const afford = !maxed && wallet.coins >= cost;
+      const pips = Array.from({ length: wallet.max }, (_, i) =>
+        `<i class="rr-pip ${i < lvl ? 'rr-pip-on' : ''}"></i>`).join('');
+      return `<div class="rr-shopcard ${maxed ? 'rr-shopcard-max' : ''}">
+        <div class="rr-shopcard-top">
+          <b>${label}</b>
+          <span class="rr-pips">${pips}</span>
+        </div>
+        <small class="rr-shopcard-blurb">${blurb}</small>
+        <button class="rr-shop-buy ${afford ? 'rr-shop-buy-ok' : ''}" data-stat="${id}" ${afford ? '' : 'disabled'}>
+          ${maxed ? 'MAXED OUT' : `Upgrade · ${cost} 🪙`}
         </button>
       </div>`;
     }).join('');
@@ -1775,17 +2021,25 @@ function createController(ctx) {
     }
   }
 
+
   function onMessage(data) {
     if (!data) return;
     if (data.k === 'seat') {
       mySeat = data.seat; myColor = data.color; chars = data.chars;
-      seatMeta[mySeat] = { name: data.name, color: data.color };
+      cups = data.cups || cups; cupSel = data.cup || 0;
+      if (data.hero) myHero = data.hero;               // characters persist across restarts
       isPartyHost = !!data.isHost;
+      /* tint this phone with the player's own colour */
+      const rootEl = $q('.rr-ctrl');
+      rootEl.style.setProperty('--me', myColor);
+      rootEl.style.setProperty('--me-deep', shade(myColor, 0.34));
+      rootEl.style.setProperty('--me-dark', shade(myColor, 0.52));
+      rootEl.style.setProperty('--me-soft', shade(myColor, 0.72));
       renderPick();
     } else if (data.k === 'phase') {
       phase = data.ph;
       if (data.segs) { trk = buildTrack(data.segs); trk.theme = data.tno || 0; }
-      if (phase === 'pick') { myHero = null; show('cpick'); renderPick(); }
+      if (phase === 'pick') { show('cpick'); renderPick(); }
       if (phase === 'count' || phase === 'race') {
         prev = null; cur = null;
         $q('.rr-cmsg').textContent = phase === 'count' ? 'JUMP right on GO! 🚀' : '';
@@ -1808,6 +2062,13 @@ function createController(ctx) {
         $q('.rr-cdone').textContent = 'Ready for the next race ✅';
         $q('.rr-cskipshop').classList.toggle('hidden', !isPartyHost);
         show('cshop'); renderShop();
+        const fill = $q('.rr-shop-timer-fill'), t0 = performance.now(), total = (data.t || 25) * 1000;
+        const timerTick = () => {
+          if (phase !== 'shop') return;
+          fill.style.width = Math.max(0, 100 * (1 - (performance.now() - t0) / total)) + '%';
+          requestAnimationFrame(timerTick);
+        };
+        timerTick();
       }
       if (phase === 'podium' && data.rows) {
         const i = data.rows.findIndex((r) => r.seat === mySeat);
@@ -1819,6 +2080,9 @@ function createController(ctx) {
         $q('.rr-clobby').classList.toggle('hidden', !isPartyHost);
         show('cend');
       }
+    } else if (data.k === 'cupsel') {
+      cupSel = data.i | 0;
+      if (phase === 'pick') renderPick();
     } else if (data.k === 'snap') {
       prev = cur; cur = data; snapAt = performance.now();
       for (const e of data.ev) floaters.push({ ...e, at: performance.now() });
@@ -1931,5 +2195,5 @@ export const __sim = {
   makeSim, addRacer, startCountdown, stepSim, snapshot,
   inJump, inPower, inThrow, makeSegs, buildTrack,
   groundY, slopeAt, waterAt, nextWall, nearestCrestBehind, pitAt, wrapX, lerpSnap,
-  CHARS, ST, TICK, PULSE_S, RACE_COUNT, LAPS, COSTS, LVL_MAX, PTS, PAY, THEMES,
+  CHARS, ST, TICK, PULSE_S, RACE_COUNT, LAPS, COSTS, LVL_MAX, PTS, PAY, TRACKS, CUPS,
 };

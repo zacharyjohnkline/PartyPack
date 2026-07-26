@@ -1,3 +1,101 @@
+# Rock Candy Rally — round 3
+
+Changed: `js/games/rockcandyrally.js`, `css/rockcandyrally.css`, plus version
+bumps in `index.html` (main.js?v=6, rally css?v=3) and `js/main.js`
+(game import ?v=3). **Replace all four files.**
+
+**Real characters.** The emoji-in-a-circle racers are gone — Shellsworth,
+Grip, Finn and Zippy are now fully drawn vector animals (Gumdrop-style
+path art): turtle with a shell backpack, gecko with bulgy eyes and a curly
+tail, a fish with lips, fins and little legs, a rabbit with ears, whiskers
+and buck teeth. Every racer wears a racing shirt in their PLAYER colour
+(white stripe, collar, hem), with per-state poses, two-frame animation,
+and expressions (X-eyes when dizzy, ^^ on the finish line). Portraits of
+your own character — in your colour — appear on the pick cards, both on
+the big screen and your phone. To supply your own art later, the two hooks
+are `drawRacer()` and `paintPortrait()` in rockcandyrally.js.
+
+**Three cups, twelve courses.** Mario-Kart-style cup select: Sugar Cup
+(★☆☆ — Gumdrop Meadows, Lollipop Loop, Soda Lakes, Marshmallow Marsh),
+Fizzy Cup (★★☆ — Rock Candy Cliffs, Sherbet Shores, Cola Canyon, Taffy
+Twists), Sour Cup (★★★ — Sour Summit, Jawbreaker Gorge, Licorice Ladder,
+Gobstopper Gauntlet). Each course has its own palette and layout;
+difficulty (wall heights, chasm widths, water lengths) climbs cup by cup.
+The party host picks the cup on their phone from the character-select
+screen; the big screen shows all three cups with the selection highlighted.
+
+**Ledge flicker fixed.** The big-screen terrain silhouette was clamped to
+[0, track-length], so on a looping course any ledge past the seam vanished
+until the camera window moved — and samples weren't grid-aligned, so edges
+shimmered while the view zoomed. It now samples the full camera window
+(ground height wraps) on a fixed grid.
+
+**Characters persist.** "Play again" keeps everyone's character (coins,
+upgrades and points still reset for a fresh championship). Everything only
+fully clears when the host exits to the game menu.
+
+**Phone UI overhaul.** Each phone is tinted with a gradient of that
+player's colour; the game never overlaps the name bar at the top (this was
+a real bug — the game root was absolutely positioned over the whole
+screen); character cards show your portrait with a gold selected tick; the
+pit stop is a proper 2×2 card grid with level pips, priced buy buttons,
+a coin chip and a draining timer bar. Big-screen pit stop shows styled
+per-player cards flipping to "Ready", and results/podium/countdown got
+matching polish.
+
+---
+
+# Rock Candy Rally — round 2
+
+All in `js/games/rockcandyrally.js` + `css/rockcandyrally.css`; nothing else
+touched.
+
+**Wall-stuck fix** (the solo-turtle bug): three causes, three fixes. Any jump
+against a wall now grabs at least partway up (30% minimum grab quality, so a
+panic jump from the wall's foot always sticks); sliding off the bottom of a
+wall pushes you back 44px for a proper run-up instead of dumping you into
+bonk range; and a bonk is followed by a grace second during which touching
+the wall can't stun you again. Off-beat mash hops also gained a little
+height (16→24px) so mashing always out-climbs the slip. A random-button
+masher now provably finishes a full solo race.
+
+**Two-frame sprites**: every state animates — scissor-leg running (cadence
+tied to distance, so faster racers' legs whirl faster), tucked-leg jumps,
+hand-over-hand climbing, windmill-arm swimming with kicking feet, spinning
+candy-shell slides, splayed-limb trips with alternating dizzy stars,
+flailing pit falls, frustrated stall shakes, and arms-up victory hops.
+
+**Four-course cup, 3 laps each**: races 1–4 now run Gumdrop Meadows, Soda
+Lakes (swimmer's course), Rock Candy Cliffs (climber's course — two 400 to
+520px walls), and Sour Summit (giant hill finale). Courses are closed loops
+(verified to close within 0.00px); the seam is the start/finish line, and
+everything — physics, camera, interpolation, thrown jawbreakers — wraps
+around it. Races run ~50–65s. Each course has its own palette, named on the
+countdown card and the top bar, with lap counters everywhere.
+
+**Bigger climbs + anti-mash**: wall heights roughly doubled on the climbing
+courses, and climb presses now take one hop per 0.22s, so hammering inside
+the perfect-timing window can't stack hops — one beat, one hop. On Cliffs
+the wall specialist beats a flat-speed racer by ~10s.
+
+**Pitfalls**: hazard-striped chasms on every course. Run off the edge and
+you fall; jump at the edge and you clear it (a full-speed shell-slide can
+carry across narrow ones). Falling waits half a second at the bottom, then
+respawns you on the far side — forward progress is guaranteed, so nobody
+can soft-lock. Jawbreakers that land in a pit are lost.
+
+**Host phone runs the menus**: the room-opening phone can start the series
+(this was silently broken — a hard-coded `isHost=false`), skip the results
+screen, start the next race before the shop timer, end a race for the
+stragglers once someone's finished, and replay or exit from the podium.
+
+Verified by the headless bot series (four distinct winners across the four
+courses in test runs, specialists winning their home tracks), the masher
+soft-lock test, loop-closure assertions on all four courses, and headless-
+browser pixel checks of both screens.
+
+---
+
 # Rock Candy Rally — new game
 
 Added `js/games/rockcandyrally.js` + `css/rockcandyrally.css`, registered in
