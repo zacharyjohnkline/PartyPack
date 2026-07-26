@@ -1,3 +1,80 @@
+# UI round 7 — glass character cards in Rock Candy Rally
+
+Changed: `css/rockcandyrally.css`, plus the version bump in `index.html`
+(rally css?v=6). **Replace both files** — no JS changed this round.
+
+The character-select cards (phone and big screen) are now frosted glass —
+translucent white with a backdrop blur and a soft white border — instead
+of opaque white. The player-colour tint glows through them, card text is
+white with a soft shadow, and the selected card brightens slightly under
+its gold ring. The point of it all: Zippy is white, and on an opaque white
+card he simply vanished; against the tinted glass every character reads
+clearly, and the cards no longer fight the colour background at full
+contrast.
+
+Pixel-verified: opaque white inside the phone's card area dropped from
+~132k pixels to ~800 (Zippy's fur and text highlights), replaced by the
+tint-through-glass blend.
+
+---
+
+# UI round 6 — Gumdrop Guardians gets the ⌂ home button
+
+Changed: `js/games/gumdropguardians.js`, `css/gumdropguardians.css`, plus
+version bumps in `index.html` (main.js?v=9, gumdrop css?v=7) and
+`js/main.js` (gumdrop import ?v=3). **Replace all four files.**
+
+The host's ⌂ End-game button from Rock Candy Rally, now in Gumdrop
+Guardians: same dark pill styling, sitting in the status row just to the
+right of the health/XP meter, in normal layout flow. Host phone only —
+other players never see it — and it routes through the shell's confirm
+dialog ("End this game for everyone…?"). The shell header's own End-game
+button hides while Gumdrop runs (and comes back on exit), so there's
+exactly one way out and it's nowhere near the backpack.
+
+Verified in-browser: visible for the host, hidden for guests, click
+reaches the shell's exit handler, header copy suppressed during play and
+restored on teardown — plus the full Rally suite still green.
+
+---
+
+# UI round 5 — Rock Candy Rally full screen + Gumdrop Guardians host fixes
+
+Changed: `js/games/rockcandyrally.js`, `css/rockcandyrally.css`,
+`js/games/gumdropguardians.js`, `css/gumdropguardians.css`, plus version
+bumps in `index.html` (main.js?v=8, rally css?v=5, gumdrop css?v=6) and
+`js/main.js` (rally import ?v=5, gumdrop import ?v=2).
+**Replace all six files.**
+
+**Rock Candy Rally goes full screen.** The shell's name bar hides while
+the game runs (it comes back the moment the game exits) — your racer and
+the phone's colour tint are the identity. The game pads itself below the
+phone notch. Since the shell's End-game button lived in that bar, the
+party host now has a ⌂ button inside the game instead: in the HUD row
+during a race (sitting in normal flow next to ⏭ End-race, so neither can
+ever cover game information — the old End-race button was absolutely
+positioned and could land on top of the item text), and a quiet
+"⌂ End game for everyone" link on the character-select screen. Both go
+through the shell's own confirm dialog.
+
+**Gumdrop Guardians: the host phone picks the match size.** The 1v1…6v6
+buttons used to exist only on the big screen. The host's phone now shows a
+"Match size" row on the hero-select screen (host only — other phones never
+see it), with the robot-fill note, kept in sync both ways: tap on the
+phone or click on the big screen and both update.
+
+**Gumdrop Guardians: backpack moved away from End game.** The 🎒 shop
+button sat at the top-right of the status row, directly under the shell's
+End-game button — a mis-tap magnet. It now sits at the top-LEFT, the full
+width of the screen away.
+
+All verified in-browser: header hidden + game at y=0 full height, ⌂
+click reaches the shell's exit handler, size picker host-only with all six
+options sending the right message, and every Rally timing cue and sim test
+still green.
+
+---
+
 # Rock Candy Rally — round 4
 
 Changed: `js/games/rockcandyrally.js`, `css/rockcandyrally.css`, plus version
@@ -77,73 +154,6 @@ pit stop is a proper 2×2 card grid with level pips, priced buy buttons,
 a coin chip and a draining timer bar. Big-screen pit stop shows styled
 per-player cards flipping to "Ready", and results/podium/countdown got
 matching polish.
-
----
-
-# Rock Candy Rally — round 2
-
-All in `js/games/rockcandyrally.js` + `css/rockcandyrally.css`; nothing else
-touched.
-
-**Wall-stuck fix** (the solo-turtle bug): three causes, three fixes. Any jump
-against a wall now grabs at least partway up (30% minimum grab quality, so a
-panic jump from the wall's foot always sticks); sliding off the bottom of a
-wall pushes you back 44px for a proper run-up instead of dumping you into
-bonk range; and a bonk is followed by a grace second during which touching
-the wall can't stun you again. Off-beat mash hops also gained a little
-height (16→24px) so mashing always out-climbs the slip. A random-button
-masher now provably finishes a full solo race.
-
-**Two-frame sprites**: every state animates — scissor-leg running (cadence
-tied to distance, so faster racers' legs whirl faster), tucked-leg jumps,
-hand-over-hand climbing, windmill-arm swimming with kicking feet, spinning
-candy-shell slides, splayed-limb trips with alternating dizzy stars,
-flailing pit falls, frustrated stall shakes, and arms-up victory hops.
-
-**Four-course cup, 3 laps each**: races 1–4 now run Gumdrop Meadows, Soda
-Lakes (swimmer's course), Rock Candy Cliffs (climber's course — two 400 to
-520px walls), and Sour Summit (giant hill finale). Courses are closed loops
-(verified to close within 0.00px); the seam is the start/finish line, and
-everything — physics, camera, interpolation, thrown jawbreakers — wraps
-around it. Races run ~50–65s. Each course has its own palette, named on the
-countdown card and the top bar, with lap counters everywhere.
-
-**Bigger climbs + anti-mash**: wall heights roughly doubled on the climbing
-courses, and climb presses now take one hop per 0.22s, so hammering inside
-the perfect-timing window can't stack hops — one beat, one hop. On Cliffs
-the wall specialist beats a flat-speed racer by ~10s.
-
-**Pitfalls**: hazard-striped chasms on every course. Run off the edge and
-you fall; jump at the edge and you clear it (a full-speed shell-slide can
-carry across narrow ones). Falling waits half a second at the bottom, then
-respawns you on the far side — forward progress is guaranteed, so nobody
-can soft-lock. Jawbreakers that land in a pit are lost.
-
-**Host phone runs the menus**: the room-opening phone can start the series
-(this was silently broken — a hard-coded `isHost=false`), skip the results
-screen, start the next race before the shop timer, end a race for the
-stragglers once someone's finished, and replay or exit from the podium.
-
-Verified by the headless bot series (four distinct winners across the four
-courses in test runs, specialists winning their home tracks), the masher
-soft-lock test, loop-closure assertions on all four courses, and headless-
-browser pixel checks of both screens.
-
----
-
-# Rock Candy Rally — new game
-
-Added `js/games/rockcandyrally.js` + `css/rockcandyrally.css`, registered in
-`js/main.js` and `index.html`. A 1-6 player side-scrolling race where all the
-skill is in timing (see README for the full rundown): four specialist candy
-racers, pulse-timed wall climbs, rhythm swimming, crest-timed shell slides,
-rocket starts, one earnable jawbreaker weapon from ? boxes, and Super
-Off-Road-style upgrades across a 4-race series. Host simulates at 30 Hz and
-snapshots to phones at 15 Hz; the track travels as a ~20-item segment list and
-both ends rebuild identical geometry with `buildTrack()`. Headless-tested with
-`__sim` hooks: full 4-race bot series completes, random-masher can't get
-permanently stuck on walls, and both screens render clean in a headless
-browser. No other game was touched.
 
 ---
 
